@@ -1,7 +1,7 @@
 """Utilities for peak selection and aggregation."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Literal
 
 import numpy as np
 import pandas as pd
@@ -55,3 +55,23 @@ def sum_attribute(
     if values.isna().all():
         return None
     return float(values.sum(skipna=True))
+
+
+def aggregate_attribute(
+    df: pd.DataFrame,
+    file_id: str,
+    selector: PeakSelector,
+    attr: str,
+    agg: Literal["sum", "mean"] = "sum",
+) -> float | None:
+    """Aggregate an attribute across selected peaks with a chosen reducer."""
+
+    peaks = match_peaks(df, file_id, selector)
+    if peaks.empty or attr not in peaks.columns:
+        return None
+    values = pd.to_numeric(peaks[attr], errors="coerce").dropna()
+    if values.empty:
+        return None
+    if agg == "mean":
+        return float(values.mean())
+    return float(values.sum())

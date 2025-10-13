@@ -1,7 +1,7 @@
 """Plot configuration controls."""
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
@@ -24,6 +23,7 @@ class PlotConfigWidget(QWidget):
     plotRequested = pyqtSignal(dict)
     exportPlotRequested = pyqtSignal()
     exportMetricsRequested = pyqtSignal()
+    exportXYRequested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -59,9 +59,11 @@ class PlotConfigWidget(QWidget):
         self.plot_button = QPushButton("Plot", self)
         self.export_plot_button = QPushButton("Export Plot", self)
         self.export_metrics_button = QPushButton("Export Metrics CSV", self)
+        self.export_xy_button = QPushButton("Export Current XY CSV", self)
         button_layout.addWidget(self.plot_button)
         button_layout.addWidget(self.export_plot_button)
         button_layout.addWidget(self.export_metrics_button)
+        button_layout.addWidget(self.export_xy_button)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -72,6 +74,7 @@ class PlotConfigWidget(QWidget):
         self.plot_button.clicked.connect(self._emit_plot)
         self.export_plot_button.clicked.connect(self.exportPlotRequested.emit)
         self.export_metrics_button.clicked.connect(self.exportMetricsRequested.emit)
+        self.export_xy_button.clicked.connect(self.exportXYRequested.emit)
 
     def set_metrics(self, metrics: List[str]) -> None:
         """Update the metric dropdowns."""

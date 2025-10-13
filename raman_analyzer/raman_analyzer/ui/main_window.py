@@ -68,8 +68,11 @@ class MainWindow(QMainWindow):
     def _create_actions(self) -> None:
         open_action = QAction("Load CSVs", self)
         open_action.triggered.connect(self._load_csvs)
+        import_map_action = QAction("Import Tags/X CSV", self)
+        import_map_action.triggered.connect(self._import_mapping_csv)
         self.toolbar = self.addToolBar("Main")
         self.toolbar.addAction(open_action)
+        self.toolbar.addAction(import_map_action)
 
     def _setup_ui(self) -> None:
         central = QWidget(self)
@@ -117,12 +120,14 @@ class MainWindow(QMainWindow):
         self.plot_config.plotRequested.connect(self._on_plot_requested)
         self.plot_config.exportMetricsRequested.connect(self._export_metrics)
         self.plot_config.exportPlotRequested.connect(self._export_plot)
+        self.plot_config.exportXYRequested.connect(self._export_xy)
         self.trendline_form.fitRequested.connect(self._on_fit_requested)
         self.trendline_form.literatureOverlayRequested.connect(self._on_literature_overlay)
         self.trendline_form.intersectionsRequested.connect(self._on_intersections_requested)
         self.trendline_form.exportIntersectionsRequested.connect(
             self._export_intersections
         )
+        self.trendline_form.exportFitsRequested.connect(self._export_fit_params)
 
     # ------------------------------------------------------------------ Loading data
     def _load_csvs(self) -> None:
@@ -455,12 +460,34 @@ class MainWindow(QMainWindow):
             self,
             "Save plot",
             "plot.png",
-            "PNG Files (*.png)",
+            "PNG (*.png);;SVG (*.svg);;PDF (*.pdf)",
         )
         if not path:
             return
         self.canvas.figure.savefig(path, dpi=300)
         self.statusBar().showMessage(f"Plot saved to {path}", 5000)
+
+    def _export_xy(self) -> None:
+        if self.current_plot_data is None or self.current_plot_data.empty:
+            QMessageBox.information(self, "Export XY", "No XY data to export.")
+            return
+        x_label = "x"
+        y_label = "y"
+        if self.current_plot_config:
+            x_label = self.current_plot_config.get("x_axis", x_label)
+            y_label = self.current_plot_config.get("y_axis", y_label)
+        df = self.current_plot_data.copy()
+        df = df.rename(columns={"x": x_label or "x", "y": y_label or "y"})
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export current XY CSV",
+            "plot_xy.csv",
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        df.to_csv(path, index=False)
+        self.statusBar().showMessage(f"XY exported to {path}", 5000)
 
     def _export_intersections(self) -> None:
         points = self.session.intersections
@@ -480,3 +507,88 @@ class MainWindow(QMainWindow):
         df = pd.DataFrame(points, columns=["x", "y"])
         df.to_csv(path, index=False)
         self.statusBar().showMessage(f"Intersections exported to {path}", 5000)
+
+    def _export_fit_params(self) -> None:
+        if not self.session.data_fit and not self.session.literature_fit:
+            QMessageBox.information(
+                self, "Export Fit Params", "No fit parameters to export."
+            )
+            return
+        rows = []
+        if self.session.data_fit:
+            data_fit = self.session.data_fit
+            coeffs = list(data_fit.get("coeffs", ()))
+            rows.append(
+                {
+                    "role": "data",
+                    "model": data_fit.get("model", ""),
+                    "r2": data_fit.get("r2", ""),
+                    "coeff1": coeffs[0] if len(coeffs) > 0 else "",
+                    "coeff2": coeffs[1] if len(coeffs) > 1 else "",
+                    "coeff3": coeffs[2] if len(coeffs) > 2 else "",
+                }
+            )
+        if self.session.literature_fit:
+            lit_fit = self.session.literature_fit
+            coeffs = list(lit_fit.get("coeffs", ()))
+            rows.append(
+                {
+                    "role": "literature",
+                    "model": lit_fit.get("model", ""),
+                    "r2": "",
+                    "coeff1": coeffs[0] if len(coeffs) > 0 else "",
+                    "coeff2": coeffs[1] if len(coeffs) > 1 else "",
+                    "coeff3": coeffs[2] if len(coeffs) > 2 else "",
+                }
+            )
+        df = pd.DataFrame(rows, columns=["role", "model", "r2", "coeff1", "coeff2", "coeff3"])
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export fit parameters CSV",
+            "fit_params.csv",
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        df.to_csv(path, index=False)
+        self.statusBar().showMessage(f"Fit params exported to {path}", 5000)
+
+    def _import_mapping_csv(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Tags/X mapping CSV",
+            "",
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            mapping_df = pd.read_csv(path)
+        except Exception as exc:  # pragma: no cover - user feedback path
+            QMessageBox.warning(self, "Import mapping", f"Failed to read CSV:\n{exc}")
+            return
+        if "file" not in mapping_df.columns:
+            QMessageBox.warning(self, "Import mapping", "CSV must contain a 'file' column.")
+            return
+        if "tag" in mapping_df.columns:
+            for _, row in mapping_df[["file", "tag"]].dropna(subset=["file"]).iterrows():
+                self.session.set_tag(str(row["file"]), str(row["tag"]))
+        if "x" in mapping_df.columns:
+            mapping = dict(self.session.x_mapping or {})
+            for _, row in mapping_df[["file", "x"]].dropna(subset=["file"]).iterrows():
+                try:
+                    mapping[str(row["file"])] = float(row["x"])
+                except (TypeError, ValueError):
+                    continue
+            self.session.update_x_mapping(mapping)
+        if not self.session.raw_df.empty:
+            files = self.session.raw_df["file"].dropna().unique().tolist()
+            self.file_list.set_files(
+                files,
+                self.session.file_to_tag,
+                self.session.x_mapping or {},
+            )
+        self._update_plot_metrics()
+        if self.current_plot_config:
+            self._on_plot_requested(self.current_plot_config)
+        self.statusBar().showMessage("Mapping CSV imported", 5000)

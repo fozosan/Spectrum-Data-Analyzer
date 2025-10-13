@@ -25,6 +25,7 @@ class TrendlineForm(QWidget):
     literatureOverlayRequested = pyqtSignal(dict)
     intersectionsRequested = pyqtSignal()
     exportIntersectionsRequested = pyqtSignal()
+    exportFitsRequested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,6 +64,7 @@ class TrendlineForm(QWidget):
         # Intersections and export
         self.intersections_button = QPushButton("Compute Intersections", self)
         self.export_intersections_button = QPushButton("Export Intersections CSV", self)
+        self.export_fits_button = QPushButton("Export Fit Params CSV", self)
 
         self.table = QTableWidget(self)
         self.table.setColumnCount(2)
@@ -74,6 +76,7 @@ class TrendlineForm(QWidget):
         layout.addWidget(literature_group)
         layout.addWidget(self.intersections_button)
         layout.addWidget(self.export_intersections_button)
+        layout.addWidget(self.export_fits_button)
         layout.addWidget(self.table)
 
         self.fit_button.clicked.connect(self._emit_fit)
@@ -83,6 +86,7 @@ class TrendlineForm(QWidget):
         self.export_intersections_button.clicked.connect(
             self.exportIntersectionsRequested.emit
         )
+        self.export_fits_button.clicked.connect(self.exportFitsRequested.emit)
 
     def _emit_fit(self) -> None:
         model = self.data_model_combo.currentText().lower()

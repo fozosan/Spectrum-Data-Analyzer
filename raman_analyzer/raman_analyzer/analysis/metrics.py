@@ -6,7 +6,11 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
-from raman_analyzer.analysis.peaks import match_peaks, sum_attribute
+from raman_analyzer.analysis.peaks import (
+    aggregate_attribute,
+    match_peaks,
+    sum_attribute,
+)
 from raman_analyzer.models.selections import PeakSelector
 
 
@@ -16,13 +20,15 @@ def _per_file(df: pd.DataFrame) -> List[str]:
     return df["file"].dropna().astype(str).unique().tolist()
 
 
-def compute_single(df: pd.DataFrame, attr: str, selector: PeakSelector) -> pd.DataFrame:
-    """Compute per-file sums for a single attribute."""
+def compute_single(
+    df: pd.DataFrame, attr: str, selector: PeakSelector, agg: str = "sum"
+) -> pd.DataFrame:
+    """Compute per-file aggregated values for a single attribute."""
 
     files = _per_file(df)
     results = []
     for file_id in files:
-        value = sum_attribute(df, file_id, selector, attr)
+        value = aggregate_attribute(df, file_id, selector, attr, agg=agg)
         results.append({"file": file_id, "value": value})
     return pd.DataFrame(results)
 
@@ -32,14 +38,15 @@ def compute_ratio(
     attr: str,
     num_selector: PeakSelector,
     den_selector: PeakSelector,
+    agg: str = "sum",
 ) -> pd.DataFrame:
     """Compute ratios between two peak selections per file."""
 
     files = _per_file(df)
     rows = []
     for file_id in files:
-        numerator = sum_attribute(df, file_id, num_selector, attr)
-        denominator = sum_attribute(df, file_id, den_selector, attr)
+        numerator = aggregate_attribute(df, file_id, num_selector, attr, agg=agg)
+        denominator = aggregate_attribute(df, file_id, den_selector, attr, agg=agg)
         value = np.nan
         if numerator is not None and denominator not in (None, 0):
             if denominator is not None and not np.isclose(denominator, 0.0):

@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
@@ -91,6 +90,8 @@ class CalcBuilderWidget(QWidget):
         self.mode_combo.addItems(["Single", "Ratio", "Difference"])
         self.attr_combo = QComboBox(self)
         self.attr_combo.addItems(self.available_attributes)
+        self.agg_combo = QComboBox(self)
+        self.agg_combo.addItems(["sum", "mean"])
         self.metric_name_edit = QLineEdit(self)
         self.metric_name_edit.setPlaceholderText("Metric name (auto if blank)")
 
@@ -102,6 +103,7 @@ class CalcBuilderWidget(QWidget):
         form = QFormLayout()
         form.addRow("Mode", self.mode_combo)
         form.addRow("Attribute", self.attr_combo)
+        form.addRow("Aggregation", self.agg_combo)
         form.addRow("Metric Name", self.metric_name_edit)
 
         selector_layout = QHBoxLayout()
@@ -141,14 +143,15 @@ class CalcBuilderWidget(QWidget):
         attr = self.attr_combo.currentText()
         mode = self.mode_combo.currentText()
         metric_name = self.metric_name_edit.text().strip() or self._auto_metric_name(attr)
+        agg = self.agg_combo.currentText()
 
         selector_a = self.selector_a.to_selector()
         selector_b = self.selector_b.to_selector()
 
         if mode == "Single":
-            result = compute_single(self.raw_df, attr, selector_a)
+            result = compute_single(self.raw_df, attr, selector_a, agg=agg)
         elif mode == "Ratio":
-            result = compute_ratio(self.raw_df, attr, selector_a, selector_b)
+            result = compute_ratio(self.raw_df, attr, selector_a, selector_b, agg=agg)
         else:
             result = compute_difference(self.raw_df, attr, selector_a, selector_b)
 

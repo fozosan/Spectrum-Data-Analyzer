@@ -33,6 +33,18 @@ def test_compute_single_sum() -> None:
         assert row["value"] == expected[row["file"]]
 
 
+def test_compute_single_mean() -> None:
+    df = build_mock_df()
+    selector = PeakSelector(mode="by_index", indices=[0, 2])
+    result = compute_single(df, "area", selector, agg="mean")
+    expected = {
+        "a": 6.25,
+        "b": 4.5,
+    }
+    for _, row in result.iterrows():
+        assert row["value"] == expected[row["file"]]
+
+
 def test_compute_ratio() -> None:
     df = build_mock_df()
     num = PeakSelector(mode="by_index", indices=[0])
@@ -41,6 +53,19 @@ def test_compute_ratio() -> None:
     expected = {
         "a": 2.0,
         "b": 2.0,
+    }
+    for _, row in result.iterrows():
+        assert row["value"] == expected[row["file"]]
+
+
+def test_compute_ratio_mean() -> None:
+    df = build_mock_df()
+    num = PeakSelector(mode="by_index", indices=[0, 2])
+    den = PeakSelector(mode="by_index", indices=[1])
+    result = compute_ratio(df, "area", num, den, agg="mean")
+    expected = {
+        "a": 6.25 / 5.0,
+        "b": 4.5 / 4.0,
     }
     for _, row in result.iterrows():
         assert row["value"] == expected[row["file"]]
