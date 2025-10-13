@@ -72,6 +72,7 @@ def aggregate_attribute(
     values = pd.to_numeric(peaks[attr], errors="coerce").dropna()
     if values.empty:
         return None
+    agg = (agg or "sum").lower()
     if agg == "mean":
         return float(values.mean())
     return float(values.sum())

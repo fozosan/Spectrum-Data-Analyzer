@@ -23,6 +23,7 @@ class PlotConfigWidget(QWidget):
     plotRequested = pyqtSignal(dict)
     exportPlotRequested = pyqtSignal()
     exportMetricsRequested = pyqtSignal()
+    exportGroupStatsRequested = pyqtSignal()
     exportXYRequested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -59,10 +60,12 @@ class PlotConfigWidget(QWidget):
         self.plot_button = QPushButton("Plot", self)
         self.export_plot_button = QPushButton("Export Plot", self)
         self.export_metrics_button = QPushButton("Export Metrics CSV", self)
+        self.export_group_stats_button = QPushButton("Export Group Stats CSV", self)
         self.export_xy_button = QPushButton("Export Current XY CSV", self)
         button_layout.addWidget(self.plot_button)
         button_layout.addWidget(self.export_plot_button)
         button_layout.addWidget(self.export_metrics_button)
+        button_layout.addWidget(self.export_group_stats_button)
         button_layout.addWidget(self.export_xy_button)
 
         layout = QVBoxLayout(self)
@@ -74,6 +77,9 @@ class PlotConfigWidget(QWidget):
         self.plot_button.clicked.connect(self._emit_plot)
         self.export_plot_button.clicked.connect(self.exportPlotRequested.emit)
         self.export_metrics_button.clicked.connect(self.exportMetricsRequested.emit)
+        self.export_group_stats_button.clicked.connect(
+            self.exportGroupStatsRequested.emit
+        )
         self.export_xy_button.clicked.connect(self.exportXYRequested.emit)
 
     def set_metrics(self, metrics: List[str]) -> None:

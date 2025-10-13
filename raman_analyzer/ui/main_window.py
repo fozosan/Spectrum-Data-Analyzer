@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from raman_analyzer.analysis.grouping import group_stats
 from raman_analyzer.analysis.trendlines import (
     eval_linear,
     eval_power,
@@ -121,6 +122,7 @@ class MainWindow(QMainWindow):
         self.plot_config.exportMetricsRequested.connect(self._export_metrics)
         self.plot_config.exportPlotRequested.connect(self._export_plot)
         self.plot_config.exportXYRequested.connect(self._export_xy)
+        self.plot_config.exportGroupStatsRequested.connect(self._export_group_stats)
         self.trendline_form.fitRequested.connect(self._on_fit_requested)
         self.trendline_form.literatureOverlayRequested.connect(self._on_literature_overlay)
         self.trendline_form.intersectionsRequested.connect(self._on_intersections_requested)
@@ -128,6 +130,7 @@ class MainWindow(QMainWindow):
             self._export_intersections
         )
         self.trendline_form.exportFitsRequested.connect(self._export_fit_params)
+        self.trendline_form.exportResidualsRequested.connect(self._export_residuals)
 
     # ------------------------------------------------------------------ Loading data
     def _load_csvs(self) -> None:
@@ -243,12 +246,14 @@ class MainWindow(QMainWindow):
             self.current_plot_data = None
         else:
             if x_axis == "Group (categorical)":
-                plot_df = df[["tag", y_metric]].dropna()
+                plot_df = df[["file", "tag", y_metric]].dropna()
                 if plot_df.empty:
                     return
                 categories = pd.Categorical(plot_df["tag"].fillna("(untagged)"))
                 numeric_x = categories.codes.astype(float)
-                plot_df = plot_df.assign(tag=categories, x=numeric_x, y=plot_df[y_metric])
+                plot_df = plot_df.assign(
+                    tag=categories, x=numeric_x, y=plot_df[y_metric]
+                )
                 if plot_type == "Line":
                     draw_line(self.canvas.axes, plot_df, "x", "y", hue="tag")
                 else:
@@ -265,7 +270,9 @@ class MainWindow(QMainWindow):
                     return
                 tmp = df[["file", "tag", y_metric]].copy()
                 tmp["x"] = tmp["file"].map(self.session.x_mapping).astype(float)
-                plot_df = tmp.dropna(subset=["x", y_metric]).rename(columns={y_metric: "y"})
+                plot_df = tmp.dropna(subset=["x", y_metric]).rename(
+                    columns={y_metric: "y"}
+                )
                 if plot_df.empty:
                     return
                 if plot_type == "Line":
@@ -277,7 +284,7 @@ class MainWindow(QMainWindow):
             else:
                 if x_axis not in df.columns:
                     return
-                plot_df = df[["tag", x_axis, y_metric]].dropna()
+                plot_df = df[["file", "tag", x_axis, y_metric]].dropna()
                 if plot_df.empty:
                     return
                 plot_df = plot_df.rename(columns={x_axis: "x", y_metric: "y"})
@@ -287,7 +294,7 @@ class MainWindow(QMainWindow):
                     draw_scatter(self.canvas.axes, plot_df, "x", "y", hue="tag")
                 self.canvas.axes.set_xlabel(x_axis)
                 self.canvas.axes.set_ylabel(y_metric)
-            self.current_plot_data = plot_df[["tag", "x", "y"]]
+            self.current_plot_data = plot_df[["file", "tag", "x", "y"]]
             if config.get("error_bars") and not self.current_plot_data.empty:
                 self._add_error_bars(x_axis, y_metric)
 
@@ -488,6 +495,68 @@ class MainWindow(QMainWindow):
             return
         df.to_csv(path, index=False)
         self.statusBar().showMessage(f"XY exported to {path}", 5000)
+
+    def _export_group_stats(self) -> None:
+        if self.session.results_df.empty or not self.current_plot_config:
+            QMessageBox.information(self, "Export Group Stats", "No data to export.")
+            return
+        y_metric = self.current_plot_config.get("y_axis")
+        long_df = self._long_results()
+        metric_df = long_df[long_df["metric_name"] == y_metric]
+        if metric_df.empty:
+            QMessageBox.information(
+                self, "Export Group Stats", "No metric data to export."
+            )
+            return
+        summary = group_stats(metric_df, y_metric)
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export group stats CSV",
+            f"group_stats_{y_metric}.csv",
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        summary.to_csv(path, index=False)
+        self.statusBar().showMessage(f"Group stats exported to {path}", 5000)
+
+    def _export_residuals(self) -> None:
+        if self.current_plot_data is None or self.current_plot_data.empty:
+            QMessageBox.information(self, "Export Residuals", "No plot data available.")
+            return
+        if not self.session.data_fit:
+            QMessageBox.information(
+                self, "Export Residuals", "No data fit to compare against."
+            )
+            return
+        fit = self.session.data_fit
+        model = fit.get("model")
+        coeffs = fit.get("coeffs", ())
+        df = self.current_plot_data.copy()
+        x = df["x"].astype(float).to_numpy()
+        if model == "linear" and len(coeffs) == 2:
+            y_hat = coeffs[0] * x + coeffs[1]
+        elif model == "quadratic" and len(coeffs) == 3:
+            y_hat = coeffs[0] * x**2 + coeffs[1] * x + coeffs[2]
+        elif model == "power" and len(coeffs) == 2:
+            y_hat = np.where(x > 0, coeffs[0] * np.power(x, coeffs[1]), np.nan)
+        else:
+            QMessageBox.warning(
+                self, "Export Residuals", "Unsupported or incomplete fit model."
+            )
+            return
+        df["y_hat"] = y_hat
+        df["residual"] = df["y"].astype(float) - df["y_hat"]
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export residuals CSV",
+            "residuals.csv",
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        df.to_csv(path, index=False, columns=["file", "tag", "x", "y", "y_hat", "residual"])
+        self.statusBar().showMessage(f"Residuals exported to {path}", 5000)
 
     def _export_intersections(self) -> None:
         points = self.session.intersections
