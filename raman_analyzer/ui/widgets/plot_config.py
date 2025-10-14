@@ -1,11 +1,10 @@
 """Plot configuration controls."""
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -33,7 +32,8 @@ class PlotConfigWidget(QWidget):
         self.y_combo = QComboBox(self)
         self.plot_type_combo = QComboBox(self)
         self.plot_type_combo.addItems(["Scatter", "Line", "Box", "Violin"])
-        self.error_bars_check = QCheckBox("Show error bars", self)
+        self.error_mode_combo = QComboBox(self)
+        self.error_mode_combo.addItems(["None", "SD", "SEM", "95% CI"])
 
         self.xmin_edit = QLineEdit(self)
         self.xmax_edit = QLineEdit(self)
@@ -47,7 +47,7 @@ class PlotConfigWidget(QWidget):
         form.addRow("X axis", self.x_combo)
         form.addRow("Y axis", self.y_combo)
         form.addRow("Plot type", self.plot_type_combo)
-        form.addRow("Error bars", self.error_bars_check)
+        form.addRow("Error bars", self.error_mode_combo)
 
         axis_group = QGroupBox("Axis limits", self)
         axis_layout = QFormLayout(axis_group)
@@ -122,7 +122,7 @@ class PlotConfigWidget(QWidget):
             "x_axis": self.x_combo.currentText(),
             "y_axis": self.y_combo.currentText(),
             "plot_type": self.plot_type_combo.currentText(),
-            "error_bars": self.error_bars_check.isChecked(),
+            "error_mode": self.error_mode_combo.currentText(),
             "x_limits": (self._parse_limit(self.xmin_edit), self._parse_limit(self.xmax_edit)),
             "y_limits": (self._parse_limit(self.ymin_edit), self._parse_limit(self.ymax_edit)),
         }

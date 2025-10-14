@@ -24,11 +24,17 @@ def _select_by_center(df: pd.DataFrame, centers: List[float], tolerance: float) 
     if "center" not in df.columns or not centers:
         return df.iloc[0:0]
     selected_indices: List[int] = []
+    centers_series = pd.to_numeric(df["center"], errors="coerce")
     for target in centers:
-        differences = np.abs(df["center"].astype(float) - float(target))
-        min_idx = differences.idxmin()
-        if np.isfinite(differences.loc[min_idx]) and differences.loc[min_idx] <= tolerance:
+        diffs = (centers_series - float(target)).abs()
+        finite = diffs[np.isfinite(diffs)]
+        if finite.empty:
+            continue
+        min_idx = finite.idxmin()
+        if finite.loc[min_idx] <= tolerance:
             selected_indices.append(min_idx)
+    if not selected_indices:
+        return df.iloc[0:0]
     return df.loc[selected_indices].drop_duplicates()
 
 
