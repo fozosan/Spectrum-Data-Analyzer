@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from raman_analyzer.analysis.grouping import compute_error_table, group_stats
+from raman_analyzer.analysis.grouping import compute_error_table
 from raman_analyzer.analysis.trendlines import (
     eval_linear,
     eval_power,
@@ -716,28 +716,42 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"XY exported to {path}", 5000)
 
     def _export_group_stats(self) -> None:
-        if self.session.results_df.empty or not self.current_plot_config:
-            QMessageBox.information(self, "Export Group Stats", "No data to export.")
-            return
-        y_metric = self.current_plot_config.get("y_axis")
-        long_df = self._long_results()
-        metric_df = long_df[long_df["metric_name"] == y_metric]
-        if metric_df.empty:
+        """Export grouped stats with error columns (SD/SEM/95% CI)."""
+        if self.current_plot_data is None or self.current_plot_data.empty:
             QMessageBox.information(
-                self, "Export Group Stats", "No metric data to export."
+                self,
+                "Export Group Stats",
+                "There is no plotted data to summarize. Please plot a metric first.",
             )
             return
-        summary = group_stats(metric_df, y_metric)
+
+        mode = "None"
+        if isinstance(self.current_plot_config, dict):
+            mode = self.current_plot_config.get("error_mode", "None") or "None"
+
+        table = compute_error_table(self.current_plot_data, mode=mode)
+        if table.empty:
+            QMessageBox.information(
+                self,
+                "Export Group Stats",
+                "Could not compute grouped statistics for the current view.",
+            )
+            return
+
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Export group stats CSV",
-            f"group_stats_{y_metric}.csv",
+            "Save Group Stats CSV",
+            "",
             "CSV Files (*.csv)",
         )
         if not path:
             return
-        summary.to_csv(path, index=False)
-        self.statusBar().showMessage(f"Group stats exported to {path}", 5000)
+        try:
+            table.to_csv(path, index=False)
+        except Exception as exc:  # pragma: no cover - defensive
+            QMessageBox.warning(self, "Export Group Stats", f"Failed to save CSV:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Group stats saved to {path}", 5000)
 
     def _export_residuals(self) -> None:
         if self.current_plot_data is None or self.current_plot_data.empty:

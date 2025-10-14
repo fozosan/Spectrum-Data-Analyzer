@@ -34,6 +34,10 @@ class PlotConfigWidget(QWidget):
         self.plot_type_combo.addItems(["Scatter", "Line", "Box", "Violin"])
         self.error_mode_combo = QComboBox(self)
         self.error_mode_combo.addItems(["None", "SD", "SEM", "95% CI"])
+        self.error_mode_combo.setToolTip(
+            "Applies to Scatter: SD (sample std), SEM (std/√n), or 95% CI using t-critical values.\n"
+            "Groups with fewer than two points omit error bars."
+        )
 
         self.xmin_edit = QLineEdit(self)
         self.xmax_edit = QLineEdit(self)
@@ -73,6 +77,9 @@ class PlotConfigWidget(QWidget):
         layout.addWidget(axis_group)
         layout.addLayout(button_layout)
         layout.addStretch(1)
+
+        self.plot_type_combo.currentTextChanged.connect(self._toggle_error_mode_enabled)
+        self._toggle_error_mode_enabled(self.plot_type_combo.currentText())
 
         self.plot_button.clicked.connect(self._emit_plot)
         self.export_plot_button.clicked.connect(self.exportPlotRequested.emit)
@@ -127,3 +134,6 @@ class PlotConfigWidget(QWidget):
             "y_limits": (self._parse_limit(self.ymin_edit), self._parse_limit(self.ymax_edit)),
         }
         self.plotRequested.emit(config)
+
+    def _toggle_error_mode_enabled(self, plot_type: str) -> None:
+        self.error_mode_combo.setEnabled(plot_type == "Scatter")
