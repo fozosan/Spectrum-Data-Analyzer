@@ -113,6 +113,29 @@ class PlotConfigWidget(QWidget):
         ):
             self.x_combo.setCurrentText(current_x)
 
+    def current_config(self) -> dict:
+        """Return the currently visible plot configuration.
+
+        The structure mirrors the dict emitted by :meth:`_emit_plot`, which
+        allows callers to persist UI state even if the user hasn't clicked
+        "Plot" yet.
+        """
+
+        return {
+            "x_axis": self.x_combo.currentText(),
+            "y_axis": self.y_combo.currentText(),
+            "plot_type": self.plot_type_combo.currentText(),
+            "error_mode": self.error_mode_combo.currentText(),
+            "x_limits": (
+                self._parse_limit(self.xmin_edit),
+                self._parse_limit(self.xmax_edit),
+            ),
+            "y_limits": (
+                self._parse_limit(self.ymin_edit),
+                self._parse_limit(self.ymax_edit),
+            ),
+        }
+
     def apply_config(self, cfg: dict) -> None:
         """Restore UI controls from a previously saved configuration."""
 

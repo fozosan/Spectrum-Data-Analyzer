@@ -231,11 +231,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.session.plot_config = (
-                dict(self.current_plot_config)
-                if isinstance(self.current_plot_config, dict)
-                else None
-            )
+            # Persist the visible widget state even if the user hasn't clicked Plot yet.
+            cfg = self.plot_config.current_config()
+            self.session.plot_config = cfg if cfg else None
             save_session(path, self.session)
         except Exception as exc:  # pragma: no cover - defensive feedback
             QMessageBox.warning(self, "Save Session", f"Failed to save session:\n{exc}")
