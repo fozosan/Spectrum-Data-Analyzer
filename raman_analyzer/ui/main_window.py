@@ -550,9 +550,12 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _t_critical_95(n: int) -> float:
-        """Return two-tailed t critical value at 95% CI for df=n-1."""
+        """Return two-tailed t critical value at 95% CI.
+        Parameter n is the sample size for the group (df = n - 1).
+        """
         if n <= 1:
             return 0.0
+        # Keys here are sample sizes (n), not df.
         table = {
             2: 12.706,
             3: 4.303,
@@ -578,7 +581,7 @@ class MainWindow(QMainWindow):
             23: 2.074,
             24: 2.069,
             25: 2.064,
-            26: 2.06,
+            26: 2.060,
             27: 2.056,
             28: 2.052,
             29: 2.048,
