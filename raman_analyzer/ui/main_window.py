@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from raman_analyzer.analysis.grouping import group_stats
+from raman_analyzer.analysis.grouping import compute_error_table, group_stats
 from raman_analyzer.analysis.trendlines import (
     eval_linear,
     eval_power,
@@ -483,8 +483,8 @@ class MainWindow(QMainWindow):
                 self.canvas.axes.set_xlabel(x_axis)
                 self.canvas.axes.set_ylabel(y_metric)
             self.current_plot_data = plot_df[["file", "tag", "x", "y"]]
-            if plot_type == "Scatter":
-                self._add_error_bars(config.get("error_mode", "None"))
+        if plot_type == "Scatter":
+            self._add_error_bars(config.get("error_mode", "None"))
 
         self.current_plot_config = config
         self.canvas.draw()
@@ -509,87 +509,25 @@ class MainWindow(QMainWindow):
             return
         if mode == "None":
             return
-        df = self.current_plot_data
-        if "tag" not in df.columns or "x" not in df.columns:
-            return
-        grouped = (
-            df.groupby(["tag", "x"], dropna=False)["y"].agg(["mean", "std", "count"]).reset_index()
-        )
+
+        grouped = compute_error_table(self.current_plot_data, mode=mode)
         if grouped.empty:
             return
-        yerr = np.zeros(len(grouped), dtype=float)
-        mask = grouped["count"] >= 2
+
+        mask = (grouped["yerr"] > 0) & np.isfinite(grouped["yerr"])
         if not mask.any():
             return
-        if mode == "SD":
-            yerr[mask.to_numpy()] = grouped.loc[mask, "std"].to_numpy()
-        elif mode == "SEM":
-            yerr[mask.to_numpy()] = (
-                grouped.loc[mask, "std"] / np.sqrt(grouped.loc[mask, "count"])
-            ).to_numpy()
-        else:
-            sem = (
-                grouped.loc[mask, "std"] / np.sqrt(grouped.loc[mask, "count"])
-            ).to_numpy()
-            counts = grouped.loc[mask, "count"].to_numpy(dtype=int)
-            tcrit = np.array([self._t_critical_95(int(n)) for n in counts], dtype=float)
-            yerr[mask.to_numpy()] = tcrit * sem
-        positive = yerr > 0
-        if not np.any(positive):
-            return
+
         self.canvas.axes.errorbar(
-            grouped.loc[positive, "x"],
-            grouped.loc[positive, "mean"],
-            yerr=yerr[positive],
+            grouped.loc[mask, "x"],
+            grouped.loc[mask, "mean"],
+            yerr=grouped.loc[mask, "yerr"],
             fmt="none",
             ecolor="black",
             capsize=3,
             linewidth=1,
             zorder=3,
         )
-
-    @staticmethod
-    def _t_critical_95(n: int) -> float:
-        """Return two-tailed t critical value at 95% CI.
-        Parameter n is the sample size for the group (df = n - 1).
-        """
-        if n <= 1:
-            return 0.0
-        # Keys here are sample sizes (n), not df.
-        table = {
-            2: 12.706,
-            3: 4.303,
-            4: 3.182,
-            5: 2.776,
-            6: 2.571,
-            7: 2.447,
-            8: 2.365,
-            9: 2.306,
-            10: 2.262,
-            11: 2.228,
-            12: 2.201,
-            13: 2.179,
-            14: 2.160,
-            15: 2.145,
-            16: 2.131,
-            17: 2.120,
-            18: 2.110,
-            19: 2.101,
-            20: 2.093,
-            21: 2.086,
-            22: 2.080,
-            23: 2.074,
-            24: 2.069,
-            25: 2.064,
-            26: 2.060,
-            27: 2.056,
-            28: 2.052,
-            29: 2.048,
-            30: 2.045,
-        }
-        if n <= 30:
-            return table.get(n, 2.045)
-        return 1.96
 
     def _overlay_trendlines(self) -> None:
         if self.current_plot_data is None or self.current_plot_data.empty:
