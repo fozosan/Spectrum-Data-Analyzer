@@ -25,6 +25,7 @@ def session_to_dict(session: AnalysisSession) -> Dict[str, Any]:
     data_fit = getattr(session, "data_fit", None)
     literature_fit = getattr(session, "literature_fit", None)
     intersections = getattr(session, "intersections", []) or []
+    plot_config = getattr(session, "plot_config", None)
 
     payload: Dict[str, Any] = {
         "version": 1,
@@ -34,6 +35,7 @@ def session_to_dict(session: AnalysisSession) -> Dict[str, Any]:
         "x_mapping": {k: float(v) for k, v in dict(x_mapping).items()},
         "data_fit": data_fit,
         "literature_fit": literature_fit,
+        "plot_config": plot_config,
         "intersections": [
             {"x": float(point[0]), "y": float(point[1])}
             for point in intersections
@@ -65,6 +67,7 @@ def session_from_dict(data: Dict[str, Any]) -> AnalysisSession:
 
     sess.data_fit = data.get("data_fit") or None
     sess.literature_fit = data.get("literature_fit") or None
+    sess.plot_config = data.get("plot_config") or None
 
     intersections = data.get("intersections", []) or []
     points: list[tuple[float, float]] = []

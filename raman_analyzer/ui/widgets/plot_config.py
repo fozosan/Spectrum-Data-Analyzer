@@ -113,6 +113,44 @@ class PlotConfigWidget(QWidget):
         ):
             self.x_combo.setCurrentText(current_x)
 
+    def apply_config(self, cfg: dict) -> None:
+        """Restore UI controls from a previously saved configuration."""
+
+        if not isinstance(cfg, dict):
+            return
+
+        def _has_value(combo: QComboBox, value: object) -> bool:
+            return isinstance(value, str) and any(
+                value == combo.itemText(i) for i in range(combo.count())
+            )
+
+        plot_type = cfg.get("plot_type")
+        if _has_value(self.plot_type_combo, plot_type):
+            self.plot_type_combo.setCurrentText(str(plot_type))
+        self._toggle_error_mode_enabled(self.plot_type_combo.currentText())
+
+        y_axis = cfg.get("y_axis")
+        if _has_value(self.y_combo, y_axis):
+            self.y_combo.setCurrentText(str(y_axis))
+
+        x_axis = cfg.get("x_axis")
+        if _has_value(self.x_combo, x_axis):
+            self.x_combo.setCurrentText(str(x_axis))
+
+        err_mode = cfg.get("error_mode")
+        if _has_value(self.error_mode_combo, err_mode):
+            self.error_mode_combo.setCurrentText(str(err_mode))
+
+        x_limits = cfg.get("x_limits") or (None, None)
+        if isinstance(x_limits, (list, tuple)) and len(x_limits) == 2:
+            self._set_limit_text(self.xmin_edit, x_limits[0])
+            self._set_limit_text(self.xmax_edit, x_limits[1])
+
+        y_limits = cfg.get("y_limits") or (None, None)
+        if isinstance(y_limits, (list, tuple)) and len(y_limits) == 2:
+            self._set_limit_text(self.ymin_edit, y_limits[0])
+            self._set_limit_text(self.ymax_edit, y_limits[1])
+
     def _parse_limit(self, edit: QLineEdit) -> Optional[float]:
         text = edit.text().strip()
         if not text:
@@ -121,6 +159,12 @@ class PlotConfigWidget(QWidget):
             return float(text)
         except ValueError:
             return None
+
+    def _set_limit_text(self, edit: QLineEdit, value: object) -> None:
+        if value is None or value == "":
+            edit.clear()
+        else:
+            edit.setText(str(value))
 
     def _emit_plot(self) -> None:
         if not self.y_combo.currentText():

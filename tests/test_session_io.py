@@ -25,6 +25,14 @@ def test_session_roundtrip_dict() -> None:
     session.data_fit = {"model": "linear", "coeffs": (1.0, 2.0), "r2": 0.99}
     session.literature_fit = {"model": "linear", "coeffs": (0.5, 1.0)}
     session.intersections = [(0.5, 0.6)]
+    session.plot_config = {
+        "x_axis": "Custom X (per file)",
+        "y_axis": "area_sum",
+        "plot_type": "Scatter",
+        "error_mode": "SEM",
+        "x_limits": (0.0, 10.0),
+        "y_limits": (None, None),
+    }
 
     payload = session_to_dict(session)
     restored = session_from_dict(payload)
@@ -42,3 +50,4 @@ def test_session_roundtrip_dict() -> None:
     assert restored.data_fit == session.data_fit
     assert restored.literature_fit == session.literature_fit
     assert restored.intersections == session.intersections
+    assert restored.plot_config == session.plot_config

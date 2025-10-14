@@ -231,6 +231,11 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
+            self.session.plot_config = (
+                dict(self.current_plot_config)
+                if isinstance(self.current_plot_config, dict)
+                else None
+            )
             save_session(path, self.session)
         except Exception as exc:  # pragma: no cover - defensive feedback
             QMessageBox.warning(self, "Save Session", f"Failed to save session:\n{exc}")
@@ -250,6 +255,7 @@ class MainWindow(QMainWindow):
             return
 
         self.session = sess
+        self.current_plot_config = None
         df = self.session.raw_df if self.session.raw_df is not None else pd.DataFrame()
         if df.empty:
             QMessageBox.information(
@@ -332,8 +338,22 @@ class MainWindow(QMainWindow):
         self._on_file_selected(files[:1])
         self.trendline_form.set_fit_summary(self._format_fit_summary(self.session.data_fit))
         self.trendline_form.set_intersections(self.session.intersections)
-        if self.current_plot_config:
-            self._on_plot_requested(self.current_plot_config)
+
+        restored_cfg = getattr(self.session, "plot_config", None)
+        if isinstance(restored_cfg, dict):
+            restored_cfg = dict(restored_cfg)
+            self.plot_config.apply_config(restored_cfg)
+            self.current_plot_config = restored_cfg
+            available_metrics = [
+                col for col in self.session.results_df.columns if col not in {"file", "tag"}
+            ]
+            y_metric = restored_cfg.get("y_axis")
+            if isinstance(y_metric, str) and y_metric in available_metrics:
+                self._on_plot_requested(restored_cfg)
+            else:
+                self.canvas.axes.cla()
+                self.canvas.draw()
+                self.current_plot_data = None
         else:
             self.canvas.axes.cla()
             self.canvas.draw()
