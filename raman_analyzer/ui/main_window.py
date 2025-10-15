@@ -65,8 +65,8 @@ class MainWindow(QMainWindow):
         self._create_actions()
         self._setup_ui()
         self._connect_signals()
-        self._loader_thread: QThread | None = None
-        self._loader_worker: CsvLoaderWorker | None = None
+        self._loader_thread: Optional[QThread] = None
+        self._loader_worker: Optional[CsvLoaderWorker] = None
         self._load_failed: bool = False
 
     # ------------------------------------------------------------------ UI setup

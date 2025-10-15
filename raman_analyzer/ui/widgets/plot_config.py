@@ -25,7 +25,7 @@ class PlotConfigWidget(QWidget):
     exportGroupStatsRequested = pyqtSignal()
     exportXYRequested = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.metrics: List[str] = []
         self.x_combo = QComboBox(self)

@@ -1,6 +1,8 @@
 """Tabular view for pandas DataFrames."""
 from __future__ import annotations
 
+from typing import Optional
+
 import pandas as pd
 from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt5.QtWidgets import QTableView, QVBoxLayout, QWidget
@@ -9,7 +11,7 @@ from PyQt5.QtWidgets import QTableView, QVBoxLayout, QWidget
 class DataFrameModel(QAbstractTableModel):
     """Qt model representing a pandas DataFrame."""
 
-    def __init__(self, df: pd.DataFrame | None = None, parent=None) -> None:
+    def __init__(self, df: Optional[pd.DataFrame] = None, parent=None) -> None:
         super().__init__(parent)
         self._df = df if df is not None else pd.DataFrame()
 
@@ -18,12 +20,12 @@ class DataFrameModel(QAbstractTableModel):
         self._df = df.copy()
         self.endResetModel()
 
-    def rowCount(self, parent: QModelIndex | None = None) -> int:  # type: ignore[override]
+    def rowCount(self, parent: Optional[QModelIndex] = None) -> int:  # type: ignore[override]
         if parent and parent.isValid():
             return 0
         return len(self._df.index)
 
-    def columnCount(self, parent: QModelIndex | None = None) -> int:  # type: ignore[override]
+    def columnCount(self, parent: Optional[QModelIndex] = None) -> int:  # type: ignore[override]
         if parent and parent.isValid():
             return 0
         return len(self._df.columns)
@@ -49,7 +51,7 @@ class DataFrameModel(QAbstractTableModel):
 class DataTableWidget(QWidget):
     """Simple wrapper displaying a DataFrame in a QTableView."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.model = DataFrameModel()
         self.view = QTableView(self)

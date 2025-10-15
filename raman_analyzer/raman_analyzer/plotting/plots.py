@@ -1,7 +1,7 @@
 """Matplotlib plotting helpers for the Raman Analyzer application."""
 from __future__ import annotations
 
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -33,7 +33,7 @@ def draw_scatter(
     df: pd.DataFrame,
     x_col: str,
     y_col: str,
-    hue: str | None = "tag",
+    hue: Optional[str] = "tag",
     jitter: bool = False,
 ) -> None:
     """Render a scatter plot grouped by hue."""
@@ -56,7 +56,7 @@ def draw_scatter(
     ax.set_ylabel(y_col)
 
 
-def draw_line(ax, df: pd.DataFrame, x_col: str, y_col: str, hue: str | None = "tag") -> None:
+def draw_line(ax, df: pd.DataFrame, x_col: str, y_col: str, hue: Optional[str] = "tag") -> None:
     """Render a line plot sorted by the x-column."""
 
     ax.clear()

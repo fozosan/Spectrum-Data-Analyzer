@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from raman_analyzer.models.session import AnalysisSession
 
 
-def _to_records(df: pd.DataFrame | None) -> list[dict[str, Any]]:
+def _to_records(df: Optional[pd.DataFrame]) -> list[dict[str, Any]]:
     if df is None or df.empty:
         return []
     return df.to_dict(orient="records")

@@ -1,7 +1,7 @@
 """Metric computation utilities."""
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -101,7 +101,7 @@ def compute_normalized_area(
     df: pd.DataFrame,
     sel: PeakSelector,
     reference: str = "total",
-    ref_selector: PeakSelector | None = None,
+    ref_selector: Optional[PeakSelector] = None,
     agg: str = "sum",
 ) -> pd.DataFrame:
     """Compute area normalized per file.
@@ -125,7 +125,7 @@ def compute_normalized_area(
     rows: List[dict] = []
     for file_id in files:
         numerator = aggregate_attribute(df, file_id, sel, "area", agg=agg)
-        denominator: float | None = None
+        denominator: Optional[float] = None
         if reference == "selection":
             if ref_selector is None:
                 rows.append({"file": file_id, "value": np.nan})
