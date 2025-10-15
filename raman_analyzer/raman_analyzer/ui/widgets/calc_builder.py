@@ -1,7 +1,7 @@
 """Widget to configure and compute Raman metrics."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 from PyQt5.QtCore import pyqtSignal
@@ -29,7 +29,7 @@ from raman_analyzer.models.selections import PeakSelector
 class SelectorEditor(QGroupBox):
     """Allow the user to configure a :class:`PeakSelector`."""
 
-    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+    def __init__(self, title: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(title, parent)
         self.mode_combo = QComboBox(self)
         self.mode_combo.addItems(["by_index", "nearest_center"])
@@ -78,7 +78,7 @@ class CalcBuilderWidget(QWidget):
 
     metricComputed = pyqtSignal(str, pd.DataFrame)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.available_attributes: List[str] = [
             "area",
@@ -116,7 +116,7 @@ class CalcBuilderWidget(QWidget):
 
         self.compute_button.clicked.connect(self._compute)
 
-        self.raw_df: pd.DataFrame | None = None
+        self.raw_df: Optional[pd.DataFrame] = None
         self.file_to_tag: dict[str, str] = {}
 
     def set_available_attributes(self, attrs: List[str]) -> None:

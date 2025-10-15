@@ -1,7 +1,7 @@
 """Widget displaying loaded files and editable tags."""
 from __future__ import annotations
 
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
@@ -13,7 +13,7 @@ class FileListWidget(QWidget):
     tagChanged = pyqtSignal(str, str)
     selectionChanged = pyqtSignal(list)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._updating = False
         self.table = QTableWidget(self)

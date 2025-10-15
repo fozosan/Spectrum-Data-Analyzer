@@ -1,7 +1,7 @@
 """Trendline configuration form."""
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
@@ -26,7 +26,7 @@ class TrendlineForm(QWidget):
     intersectionsRequested = pyqtSignal()
     exportIntersectionsRequested = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.fit_label = QLabel("No fit computed", self)
 

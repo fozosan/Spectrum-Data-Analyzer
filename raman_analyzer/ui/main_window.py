@@ -6,7 +6,7 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSlot
 from PyQt5.QtWidgets import (
     QAction,
     QFileDialog,
@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from raman_analyzer.analysis.grouping import group_stats
+from raman_analyzer.analysis.grouping import compute_error_table
 from raman_analyzer.analysis.trendlines import (
     eval_linear,
     eval_power,
@@ -30,7 +30,7 @@ from raman_analyzer.analysis.trendlines import (
     intersections_numeric,
     intersections_poly_linear,
 )
-from raman_analyzer.io.loader import load_csvs
+from raman_analyzer.io.session_io import load_session, save_session
 from raman_analyzer.models.session import AnalysisSession
 from raman_analyzer.plotting.plots import (
     PlotCanvas,
@@ -47,6 +47,7 @@ from raman_analyzer.ui.widgets.data_table import DataTableWidget
 from raman_analyzer.ui.widgets.file_list import FileListWidget
 from raman_analyzer.ui.widgets.plot_config import PlotConfigWidget
 from raman_analyzer.ui.widgets.trendline_form import TrendlineForm
+from raman_analyzer.ui.workers import CsvLoaderWorker
 
 
 class MainWindow(QMainWindow):
@@ -64,16 +65,37 @@ class MainWindow(QMainWindow):
         self._create_actions()
         self._setup_ui()
         self._connect_signals()
+        self._loader_thread: Optional[QThread] = None
+        self._loader_worker: Optional[CsvLoaderWorker] = None
+        self._load_failed: bool = False
 
     # ------------------------------------------------------------------ UI setup
     def _create_actions(self) -> None:
+        file_menu = self.menuBar().addMenu("File")
+
         open_action = QAction("Load CSVs", self)
         open_action.triggered.connect(self._load_csvs)
         import_map_action = QAction("Import Tags/X CSV", self)
         import_map_action.triggered.connect(self._import_mapping_csv)
+        save_sess_action = QAction("Save Session…", self)
+        save_sess_action.triggered.connect(self._save_session)
+        load_sess_action = QAction("Load Session…", self)
+        load_sess_action.triggered.connect(self._load_session)
+
+        file_menu.addAction(open_action)
+        file_menu.addAction(import_map_action)
+        file_menu.addSeparator()
+        file_menu.addAction(save_sess_action)
+        file_menu.addAction(load_sess_action)
+
         self.toolbar = self.addToolBar("Main")
         self.toolbar.addAction(open_action)
         self.toolbar.addAction(import_map_action)
+
+        help_menu = self.menuBar().addMenu("Help")
+        quickstart_action = QAction("Quick Start", self)
+        quickstart_action.triggered.connect(self._show_quick_start)
+        help_menu.addAction(quickstart_action)
 
     def _setup_ui(self) -> None:
         central = QWidget(self)
@@ -142,9 +164,40 @@ class MainWindow(QMainWindow):
         )
         if not paths:
             return
-        df = load_csvs(paths)
+        if self._loader_thread and self._loader_thread.isRunning():
+            QMessageBox.information(
+                self,
+                "Load CSVs",
+                "A CSV load is already in progress. Please wait for it to finish.",
+            )
+            return
+
+        self._load_failed = False
+        self.statusBar().showMessage("Loading CSVs…")
+        worker = CsvLoaderWorker(paths)
+        thread = QThread(self)
+        self._loader_thread = thread
+        self._loader_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_csvs_loaded)
+        worker.error.connect(self._on_csv_load_error)
+        worker.finished.connect(lambda _: thread.quit())
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda: setattr(self, "_loader_thread", None))
+        thread.finished.connect(lambda: setattr(self, "_loader_worker", None))
+        thread.start()
+
+    @pyqtSlot(pd.DataFrame)
+    def _on_csvs_loaded(self, df: pd.DataFrame) -> None:
         if df.empty:
-            QMessageBox.warning(self, "Load CSVs", "No data found in selected files.")
+            if not self._load_failed:
+                QMessageBox.warning(
+                    self, "Load CSVs", "No data found in selected files."
+                )
+            self.statusBar().clearMessage()
+            self._load_failed = False
             return
         self.session.set_raw_data(df)
         files = df["file"].dropna().unique().tolist()
@@ -163,6 +216,159 @@ class MainWindow(QMainWindow):
         self._update_plot_metrics()
         self._on_file_selected(files[:1])
         self.statusBar().showMessage(f"Loaded {len(files)} files", 5000)
+        self._load_failed = False
+
+    def _on_csv_load_error(self, message: str) -> None:  # pragma: no cover - GUI warning
+        self._load_failed = True
+        QMessageBox.warning(self, "Load CSVs", message)
+        self.statusBar().clearMessage()
+
+    # ------------------------------------------------------------------ Session save/load
+    def _save_session(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Session", "", "Raman Analyzer Session (*.json)"
+        )
+        if not path:
+            return
+        try:
+            # Persist the visible widget state even if the user hasn't clicked Plot yet.
+            cfg = self.plot_config.current_config()
+            self.session.plot_config = cfg if cfg else None
+            save_session(path, self.session)
+        except Exception as exc:  # pragma: no cover - defensive feedback
+            QMessageBox.warning(self, "Save Session", f"Failed to save session:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Session saved to {path}", 5000)
+
+    def _load_session(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Session", "", "Raman Analyzer Session (*.json)"
+        )
+        if not path:
+            return
+        try:
+            sess = load_session(path)
+        except Exception as exc:  # pragma: no cover - defensive feedback
+            QMessageBox.warning(self, "Load Session", f"Failed to load session:\n{exc}")
+            return
+
+        self.session = sess
+        self.current_plot_config = None
+        df = self.session.raw_df if self.session.raw_df is not None else pd.DataFrame()
+        if df.empty:
+            QMessageBox.information(
+                self,
+                "Load Session",
+                "Session loaded, but no raw data found.",
+            )
+            self.file_list.set_files([], {}, {})
+            self.data_table.set_dataframe(pd.DataFrame())
+            self.calc_builder.set_data(pd.DataFrame(), {})
+            self.calc_builder.set_available_attributes(
+                ["area", "height", "fwhm", "center", "area_pct"]
+            )
+            self.plot_config.set_metrics([])
+            self.current_plot_data = None
+            self.canvas.axes.cla()
+            self.canvas.draw()
+            self.trendline_form.set_fit_summary(self._format_fit_summary(None))
+            self.trendline_form.set_intersections([])
+            self.statusBar().showMessage(f"Session loaded from {path}", 5000)
+            return
+
+        if "file" not in df.columns:
+            QMessageBox.warning(
+                self,
+                "Load Session",
+                "Session data is missing the 'file' column and cannot be displayed.",
+            )
+            self.file_list.set_files([], {}, {})
+            self.data_table.set_dataframe(pd.DataFrame())
+            self.calc_builder.set_data(df, {})
+            self.calc_builder.set_available_attributes(
+                ["area", "height", "fwhm", "center", "area_pct"]
+            )
+            self.plot_config.set_metrics([])
+            self.current_plot_data = None
+            self.canvas.axes.cla()
+            self.canvas.draw()
+            self.trendline_form.set_fit_summary(self._format_fit_summary(None))
+            self.trendline_form.set_intersections([])
+            self.statusBar().showMessage(f"Session loaded from {path}", 5000)
+            return
+
+        files = df["file"].dropna().unique().tolist()
+        if not files:
+            QMessageBox.information(
+                self,
+                "Load Session",
+                "Session loaded, but no files were found in the data.",
+            )
+            self.file_list.set_files([], self.session.file_to_tag, self.session.x_mapping or {})
+            self.data_table.set_dataframe(pd.DataFrame())
+            self.calc_builder.set_data(df, self.session.file_to_tag)
+            available_attrs = [
+                col
+                for col in ["area", "height", "fwhm", "center", "area_pct"]
+                if col in df.columns
+            ] or ["area", "height", "fwhm", "center", "area_pct"]
+            self.calc_builder.set_available_attributes(available_attrs)
+            self.plot_config.set_metrics([])
+            self.current_plot_data = None
+            self.canvas.axes.cla()
+            self.canvas.draw()
+            self.trendline_form.set_fit_summary(self._format_fit_summary(self.session.data_fit))
+            self.trendline_form.set_intersections(self.session.intersections)
+            self.statusBar().showMessage(f"Session loaded from {path}", 5000)
+            return
+
+        self.file_list.set_files(
+            files, self.session.file_to_tag, self.session.x_mapping or {}
+        )
+        self.calc_builder.set_data(df, self.session.file_to_tag)
+        available_attrs = [
+            col
+            for col in ["area", "height", "fwhm", "center", "area_pct"]
+            if col in df.columns
+        ] or ["area", "height", "fwhm", "center", "area_pct"]
+        self.calc_builder.set_available_attributes(available_attrs)
+        self._update_plot_metrics()
+        self._on_file_selected(files[:1])
+        self.trendline_form.set_fit_summary(self._format_fit_summary(self.session.data_fit))
+        self.trendline_form.set_intersections(self.session.intersections)
+
+        restored_cfg = getattr(self.session, "plot_config", None)
+        if isinstance(restored_cfg, dict):
+            restored_cfg = dict(restored_cfg)
+            self.plot_config.apply_config(restored_cfg)
+            self.current_plot_config = restored_cfg
+            available_metrics = [
+                col for col in self.session.results_df.columns if col not in {"file", "tag"}
+            ]
+            y_metric = restored_cfg.get("y_axis")
+            if isinstance(y_metric, str) and y_metric in available_metrics:
+                self._on_plot_requested(restored_cfg)
+            else:
+                self.canvas.axes.cla()
+                self.canvas.draw()
+                self.current_plot_data = None
+        else:
+            self.canvas.axes.cla()
+            self.canvas.draw()
+            self.current_plot_data = None
+        self.statusBar().showMessage(f"Session loaded from {path}", 5000)
+
+    def _show_quick_start(self) -> None:
+        QMessageBox.information(
+            self,
+            "Quick Start",
+            "1) Load CSVs of peak fits.\n"
+            "2) Assign Tags/X in the left table or import a mapping CSV.\n"
+            "3) In 'Metric Builder', choose a mode (e.g., Ratio or Normalized Area) and Compute.\n"
+            "4) Configure the plot (X/Y, type, error bars) and click Plot.\n"
+            "5) (Optional) Fit data trendline, overlay literature, compute intersections.\n"
+            "6) Export metrics/plot/residuals/intersections from the buttons.",
+        )
 
     # ------------------------------------------------------------------ File interactions
     def _on_file_selected(self, files: List[str]) -> None:
@@ -295,8 +501,8 @@ class MainWindow(QMainWindow):
                 self.canvas.axes.set_xlabel(x_axis)
                 self.canvas.axes.set_ylabel(y_metric)
             self.current_plot_data = plot_df[["file", "tag", "x", "y"]]
-            if config.get("error_bars") and not self.current_plot_data.empty:
-                self._add_error_bars(x_axis, y_metric)
+        if plot_type == "Scatter":
+            self._add_error_bars(config.get("error_mode", "None"))
 
         self.current_plot_config = config
         self.canvas.draw()
@@ -316,18 +522,30 @@ class MainWindow(QMainWindow):
             )
         self.canvas.draw()
 
-    def _add_error_bars(self, x_axis: str, y_metric: str) -> None:
+    def _add_error_bars(self, mode: str) -> None:
         if self.current_plot_data is None or self.current_plot_data.empty:
             return
-        df = self.current_plot_data
-        if "tag" not in df.columns or "x" not in df.columns:
+        if mode == "None":
             return
-        grouped = df.groupby("tag")
-        for tag, group in grouped:
-            x_mean = group["x"].mean()
-            y_mean = group["y"].mean()
-            y_std = group["y"].std(ddof=0) if len(group) > 1 else 0
-            self.canvas.axes.errorbar(x_mean, y_mean, yerr=y_std, fmt="o", color="black")
+
+        grouped = compute_error_table(self.current_plot_data, mode=mode)
+        if grouped.empty:
+            return
+
+        mask = (grouped["yerr"] > 0) & np.isfinite(grouped["yerr"])
+        if not mask.any():
+            return
+
+        self.canvas.axes.errorbar(
+            grouped.loc[mask, "x"],
+            grouped.loc[mask, "mean"],
+            yerr=grouped.loc[mask, "yerr"],
+            fmt="none",
+            ecolor="black",
+            capsize=3,
+            linewidth=1,
+            zorder=3,
+        )
 
     def _overlay_trendlines(self) -> None:
         if self.current_plot_data is None or self.current_plot_data.empty:
@@ -337,9 +555,40 @@ class MainWindow(QMainWindow):
         overlay_data_fit(self.canvas.axes, self.session.data_fit, (x_min, x_max))
         overlay_literature(self.canvas.axes, self.session.literature_fit, (x_min, x_max))
         mark_intersections(self.canvas.axes, self.session.intersections)
+        handles, labels = self.canvas.axes.get_legend_handles_labels()
+        if labels:
+            unique: dict[str, object] = {}
+            for handle, label in zip(handles, labels):
+                if label not in unique:
+                    unique[label] = handle
+            self.canvas.axes.legend(unique.values(), unique.keys())
         self.canvas.draw()
 
     # ------------------------------------------------------------------ Trendlines
+    def _format_fit_summary(self, fit: Optional[dict]) -> str:
+        if not fit:
+            return "No fit computed"
+        model = fit.get("model")
+        coeffs = fit.get("coeffs", ())
+        r2 = fit.get("r2")
+        if model == "linear" and len(coeffs) >= 2:
+            return (
+                f"Linear fit: y={coeffs[0]:.3f}x+{coeffs[1]:.3f}"
+                + (f" (R^2={r2:.3f})" if r2 is not None else "")
+            )
+        if model == "quadratic" and len(coeffs) >= 3:
+            a, b, c = coeffs[:3]
+            return (
+                f"Quadratic fit: y={a:.3f}x²+{b:.3f}x+{c:.3f}"
+                + (f" (R^2={r2:.3f})" if r2 is not None else "")
+            )
+        if model == "power" and len(coeffs) >= 2:
+            return (
+                f"Power fit: y={coeffs[0]:.3f}x^{coeffs[1]:.3f}"
+                + (f" (R^2={r2:.3f})" if r2 is not None else "")
+            )
+        return "Fit loaded"
+
     def _on_fit_requested(self, model: str) -> None:
         if self.current_plot_data is None or self.current_plot_data.empty:
             QMessageBox.information(
@@ -365,19 +614,7 @@ class MainWindow(QMainWindow):
         else:
             fit = fit_linear(x, y)
         self.session.set_data_fit(fit)
-        if fit["model"] == "linear":
-            summary = (
-                f"Linear fit: y={fit['coeffs'][0]:.3f}x+{fit['coeffs'][1]:.3f} "
-                f"(R^2={fit['r2']:.3f})"
-            )
-        elif fit["model"] == "quadratic":
-            a, b, c = fit["coeffs"]
-            summary = (
-                f"Quadratic fit: y={a:.3f}x²+{b:.3f}x+{c:.3f} (R^2={fit['r2']:.3f})"
-            )
-        else:
-            A, B = fit["coeffs"]
-            summary = f"Power fit: y={A:.3f}x^{B:.3f} (R^2={fit['r2']:.3f})"
+        summary = self._format_fit_summary(fit)
         self.trendline_form.set_fit_summary(summary)
         if self.current_plot_config:
             self._on_plot_requested(self.current_plot_config)
@@ -497,28 +734,42 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"XY exported to {path}", 5000)
 
     def _export_group_stats(self) -> None:
-        if self.session.results_df.empty or not self.current_plot_config:
-            QMessageBox.information(self, "Export Group Stats", "No data to export.")
-            return
-        y_metric = self.current_plot_config.get("y_axis")
-        long_df = self._long_results()
-        metric_df = long_df[long_df["metric_name"] == y_metric]
-        if metric_df.empty:
+        """Export grouped stats with error columns (SD/SEM/95% CI)."""
+        if self.current_plot_data is None or self.current_plot_data.empty:
             QMessageBox.information(
-                self, "Export Group Stats", "No metric data to export."
+                self,
+                "Export Group Stats",
+                "There is no plotted data to summarize. Please plot a metric first.",
             )
             return
-        summary = group_stats(metric_df, y_metric)
+
+        mode = "None"
+        if isinstance(self.current_plot_config, dict):
+            mode = self.current_plot_config.get("error_mode", "None") or "None"
+
+        table = compute_error_table(self.current_plot_data, mode=mode)
+        if table.empty:
+            QMessageBox.information(
+                self,
+                "Export Group Stats",
+                "Could not compute grouped statistics for the current view.",
+            )
+            return
+
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Export group stats CSV",
-            f"group_stats_{y_metric}.csv",
+            "Save Group Stats CSV",
+            "",
             "CSV Files (*.csv)",
         )
         if not path:
             return
-        summary.to_csv(path, index=False)
-        self.statusBar().showMessage(f"Group stats exported to {path}", 5000)
+        try:
+            table.to_csv(path, index=False)
+        except Exception as exc:  # pragma: no cover - defensive
+            QMessageBox.warning(self, "Export Group Stats", f"Failed to save CSV:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Group stats saved to {path}", 5000)
 
     def _export_residuals(self) -> None:
         if self.current_plot_data is None or self.current_plot_data.empty:

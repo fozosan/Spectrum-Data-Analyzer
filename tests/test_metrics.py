@@ -5,6 +5,7 @@ import pandas as pd
 
 from raman_analyzer.analysis.metrics import (
     compute_difference,
+    compute_normalized_area,
     compute_ratio,
     compute_single,
 )
@@ -82,3 +83,33 @@ def test_compute_difference_center() -> None:
     }
     for _, row in result.iterrows():
         assert row["value"] == expected[row["file"]]
+
+
+def test_compute_normalized_area_total() -> None:
+    df = build_mock_df()
+    sel = PeakSelector(mode="by_index", indices=[0])
+    result = compute_normalized_area(df, sel, reference="total")
+    expected = {
+        "a": 10.0 / 17.5,
+        "b": 8.0 / 13.0,
+    }
+    for _, row in result.iterrows():
+        assert abs(row["value"] - expected[row["file"]]) < 1e-9
+
+
+def test_compute_normalized_area_selection() -> None:
+    df = build_mock_df()
+    sel_a = PeakSelector(mode="by_index", indices=[0, 2])
+    sel_b = PeakSelector(mode="by_index", indices=[1])
+    result = compute_normalized_area(
+        df,
+        sel_a,
+        reference="selection",
+        ref_selector=sel_b,
+    )
+    expected = {
+        "a": (10.0 + 2.5) / 5.0,
+        "b": (8.0 + 1.0) / 4.0,
+    }
+    for _, row in result.iterrows():
+        assert abs(row["value"] - expected[row["file"]]) < 1e-9

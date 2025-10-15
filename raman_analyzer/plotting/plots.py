@@ -1,7 +1,7 @@
 """Matplotlib plotting helpers for the Raman Analyzer application."""
 from __future__ import annotations
 
-from typing import Iterable, List, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -24,8 +24,8 @@ class PlotCanvas(FigureCanvasQTAgg):
         self.axes = self.figure.add_subplot(111)
 
 
-def _color_cycle(ax) -> Iterable[str]:
-    return ax._get_lines.prop_cycler
+def _color_cycle(ax) -> Iterator[dict]:
+    return iter(ax._get_lines.prop_cycler)
 
 
 def draw_scatter(
@@ -33,16 +33,16 @@ def draw_scatter(
     df: pd.DataFrame,
     x_col: str,
     y_col: str,
-    hue: str | None = "tag",
+    hue: Optional[str] = "tag",
     jitter: bool = False,
 ) -> None:
     """Render a scatter plot grouped by hue."""
 
     ax.clear()
     if hue and hue in df.columns:
-        cycler = ax._get_lines.prop_cycler
+        cycler = _color_cycle(ax)
         for (tag, group) in df.groupby(hue):
-            color = next(cycler, {"color": None}).get("color")
+            color = next(cycler, {}).get("color", None)
             x = group[x_col].to_numpy(dtype=float, copy=False)
             y = group[y_col].to_numpy(dtype=float, copy=False)
             if jitter and len(x) > 1:
@@ -56,7 +56,7 @@ def draw_scatter(
     ax.set_ylabel(y_col)
 
 
-def draw_line(ax, df: pd.DataFrame, x_col: str, y_col: str, hue: str | None = "tag") -> None:
+def draw_line(ax, df: pd.DataFrame, x_col: str, y_col: str, hue: Optional[str] = "tag") -> None:
     """Render a line plot sorted by the x-column."""
 
     ax.clear()

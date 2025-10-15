@@ -1,7 +1,7 @@
 """Utilities for peak selection and aggregation."""
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -24,11 +24,17 @@ def _select_by_center(df: pd.DataFrame, centers: List[float], tolerance: float) 
     if "center" not in df.columns or not centers:
         return df.iloc[0:0]
     selected_indices: List[int] = []
+    centers_series = pd.to_numeric(df["center"], errors="coerce")
     for target in centers:
-        differences = np.abs(df["center"].astype(float) - float(target))
-        min_idx = differences.idxmin()
-        if np.isfinite(differences.loc[min_idx]) and differences.loc[min_idx] <= tolerance:
+        diffs = (centers_series - float(target)).abs()
+        finite = diffs[np.isfinite(diffs)]
+        if finite.empty:
+            continue
+        min_idx = finite.idxmin()
+        if finite.loc[min_idx] <= tolerance:
             selected_indices.append(min_idx)
+    if not selected_indices:
+        return df.iloc[0:0]
     return df.loc[selected_indices].drop_duplicates()
 
 
@@ -45,7 +51,7 @@ def match_peaks(df: pd.DataFrame, file_id: str, selector: PeakSelector) -> pd.Da
 
 def sum_attribute(
     df: pd.DataFrame, file_id: str, selector: PeakSelector, attr: str
-) -> float | None:
+) -> Optional[float]:
     """Sum the provided attribute across selected peaks."""
 
     peaks = match_peaks(df, file_id, selector)
@@ -63,7 +69,7 @@ def aggregate_attribute(
     selector: PeakSelector,
     attr: str,
     agg: Literal["sum", "mean"] = "sum",
-) -> float | None:
+) -> Optional[float]:
     """Aggregate an attribute across selected peaks with a chosen reducer."""
 
     peaks = match_peaks(df, file_id, selector)

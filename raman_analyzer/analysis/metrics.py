@@ -1,7 +1,7 @@
 """Metric computation utilities."""
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -95,3 +95,52 @@ def assemble_results(
     df["metric_name"] = metric_name
     df = df.rename(columns={"value": "value"})
     return df[["file", "tag", "metric_name", "value"]]
+
+
+def compute_normalized_area(
+    df: pd.DataFrame,
+    sel: PeakSelector,
+    reference: str = "total",
+    ref_selector: Optional[PeakSelector] = None,
+    agg: str = "sum",
+) -> pd.DataFrame:
+    """Compute area normalized per file.
+
+    Parameters
+    ----------
+    df:
+        DataFrame of peaks containing at least ``file`` and ``area`` columns.
+    sel:
+        Selector for the numerator.
+    reference:
+        ``"total"`` to normalize by the total area in the file or ``"selection"``
+        to normalize by ``ref_selector``.
+    ref_selector:
+        Selector to use when ``reference == "selection"``.
+    agg:
+        Aggregation mode passed to :func:`aggregate_attribute`.
+    """
+
+    files = _per_file(df)
+    rows: List[dict] = []
+    for file_id in files:
+        numerator = aggregate_attribute(df, file_id, sel, "area", agg=agg)
+        denominator: Optional[float] = None
+        if reference == "selection":
+            if ref_selector is None:
+                rows.append({"file": file_id, "value": np.nan})
+                continue
+            denominator = aggregate_attribute(df, file_id, ref_selector, "area", agg=agg)
+        else:
+            file_slice = df[df["file"] == file_id]
+            if "area" in file_slice.columns:
+                values = pd.to_numeric(file_slice["area"], errors="coerce")
+                if not values.isna().all():
+                    denominator = float(values.sum(skipna=True))
+        if numerator is None or denominator in (None, 0) or (
+            denominator is not None and np.isclose(denominator, 0.0)
+        ):
+            rows.append({"file": file_id, "value": np.nan})
+        else:
+            rows.append({"file": file_id, "value": float(numerator) / float(denominator)})
+    return pd.DataFrame(rows)
