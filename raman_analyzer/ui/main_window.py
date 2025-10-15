@@ -501,8 +501,11 @@ class MainWindow(QMainWindow):
                 self.canvas.axes.set_xlabel(x_axis)
                 self.canvas.axes.set_ylabel(y_metric)
             self.current_plot_data = plot_df[["file", "tag", "x", "y"]]
+        # Add uncertainty after drawing the primary glyphs, before overlaying fits.
         if plot_type == "Scatter":
             self._add_error_bars(config.get("error_mode", "None"))
+        elif plot_type == "Line":
+            self._shade_line_uncertainty(config.get("error_mode", "None"))
 
         self.current_plot_config = config
         self.canvas.draw()
@@ -563,6 +566,52 @@ class MainWindow(QMainWindow):
                     unique[label] = handle
             self.canvas.axes.legend(unique.values(), unique.keys())
         self.canvas.draw()
+
+    # -------- Line-plot uncertainty shading --------
+    def _shade_line_uncertainty(self, mode: str) -> None:
+        """For line plots, draw a shaded band (SD/SEM/95% CI) around the mean line per tag."""
+        if (
+            self.current_plot_data is None
+            or self.current_plot_data.empty
+            or mode == "None"
+        ):
+            return
+        grouped = compute_error_table(self.current_plot_data, mode=mode)
+        if grouped.empty:
+            return
+
+        # Map plotted group lines to their colors so the band matches.
+        # We call this before overlaying fits, so the only lines should be the groups.
+        line_colors: dict[str, str] = {}
+        for line in self.canvas.axes.get_lines():
+            label = line.get_label()
+            if label:
+                try:
+                    color = line.get_color()
+                except Exception:
+                    color = None
+                if color:
+                    line_colors[str(label)] = color
+
+        for tag, g in grouped.groupby("tag", dropna=False):
+            # Only shade where we have a positive, finite uncertainty and finite mean.
+            mask = (
+                np.isfinite(g["mean"])
+                & np.isfinite(g["yerr"])
+                & (g["yerr"] > 0)
+            )
+            if not mask.any():
+                continue
+            sg = g.loc[mask].sort_values("x")
+            x = sg["x"].to_numpy(dtype=float, copy=False)
+            m = sg["mean"].to_numpy(dtype=float, copy=False)
+            e = sg["yerr"].to_numpy(dtype=float, copy=False)
+            lower = m - e
+            upper = m + e
+            color = line_colors.get(str(tag), None)
+            self.canvas.axes.fill_between(
+                x, lower, upper, alpha=0.2, linewidth=0, color=color, zorder=1
+            )
 
     # ------------------------------------------------------------------ Trendlines
     def _format_fit_summary(self, fit: Optional[dict]) -> str:
