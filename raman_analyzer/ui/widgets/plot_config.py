@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -40,6 +41,10 @@ class PlotConfigWidget(QWidget):
             "• Line: draws a shaded band around the mean line using the chosen mode.\n"
             "Groups with fewer than two points omit uncertainty."
         )
+        self.jitter_check = QCheckBox("Jitter points", self)
+        self.jitter_check.setToolTip(
+            "Offset overlapping dots slightly on Scatter plots."
+        )
 
         self.xmin_edit = QLineEdit(self)
         self.xmax_edit = QLineEdit(self)
@@ -54,6 +59,7 @@ class PlotConfigWidget(QWidget):
         form.addRow("Y axis", self.y_combo)
         form.addRow("Plot type", self.plot_type_combo)
         form.addRow("Error bars", self.error_mode_combo)
+        form.addRow("Jitter", self.jitter_check)
 
         axis_group = QGroupBox("Axis limits", self)
         axis_layout = QFormLayout(axis_group)
@@ -80,8 +86,10 @@ class PlotConfigWidget(QWidget):
         layout.addLayout(button_layout)
         layout.addStretch(1)
 
-        self.plot_type_combo.currentTextChanged.connect(self._toggle_error_mode_enabled)
-        self._toggle_error_mode_enabled(self.plot_type_combo.currentText())
+        self.plot_type_combo.currentTextChanged.connect(
+            self._toggle_controls_for_plot_type
+        )
+        self._toggle_controls_for_plot_type(self.plot_type_combo.currentText())
 
         self.plot_button.clicked.connect(self._emit_plot)
         self.export_plot_button.clicked.connect(self.exportPlotRequested.emit)
@@ -128,6 +136,7 @@ class PlotConfigWidget(QWidget):
             "y_axis": self.y_combo.currentText(),
             "plot_type": self.plot_type_combo.currentText(),
             "error_mode": self.error_mode_combo.currentText(),
+            "jitter": self.jitter_check.isChecked(),
             "x_limits": (
                 self._parse_limit(self.xmin_edit),
                 self._parse_limit(self.xmax_edit),
@@ -152,11 +161,15 @@ class PlotConfigWidget(QWidget):
         plot_type = cfg.get("plot_type")
         if _has_value(self.plot_type_combo, plot_type):
             self.plot_type_combo.setCurrentText(str(plot_type))
-        self._toggle_error_mode_enabled(self.plot_type_combo.currentText())
+        self._toggle_controls_for_plot_type(self.plot_type_combo.currentText())
 
         y_axis = cfg.get("y_axis")
         if _has_value(self.y_combo, y_axis):
             self.y_combo.setCurrentText(str(y_axis))
+
+        jitter_value = cfg.get("jitter")
+        if isinstance(jitter_value, bool) and self.jitter_check.isEnabled():
+            self.jitter_check.setChecked(jitter_value)
 
         x_axis = cfg.get("x_axis")
         if _has_value(self.x_combo, x_axis):
@@ -199,12 +212,21 @@ class PlotConfigWidget(QWidget):
             "y_axis": self.y_combo.currentText(),
             "plot_type": self.plot_type_combo.currentText(),
             "error_mode": self.error_mode_combo.currentText(),
+            "jitter": self.jitter_check.isChecked(),
             "x_limits": (self._parse_limit(self.xmin_edit), self._parse_limit(self.xmax_edit)),
             "y_limits": (self._parse_limit(self.ymin_edit), self._parse_limit(self.ymax_edit)),
         }
         self.plotRequested.emit(config)
 
-    def _toggle_error_mode_enabled(self, plot_type: str) -> None:
+    def _toggle_controls_for_plot_type(self, plot_type: str) -> None:
+        """Enable or disable controls that are plot-type specific."""
+
         # Enable uncertainty control for both Scatter (error bars)
         # and Line (shaded band).
         self.error_mode_combo.setEnabled(plot_type in ("Scatter", "Line"))
+        # Jitter is only meaningful for scatter plots. Clear the toggle when disabled
+        # so saved configurations don't carry stale jitter settings forward.
+        is_scatter = plot_type == "Scatter"
+        self.jitter_check.setEnabled(is_scatter)
+        if not is_scatter:
+            self.jitter_check.setChecked(False)

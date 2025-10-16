@@ -8,8 +8,10 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -32,7 +34,7 @@ class TrendlineForm(QWidget):
         super().__init__(parent)
         self.fit_label = QLabel("No fit computed", self)
 
-        # Data fit controls
+        # Data trendline controls
         self.data_model_combo = QComboBox(self)
         self.data_model_combo.addItems(["Linear", "Quadratic", "Power"])
         self.fit_button = QPushButton("Fit Data", self)
@@ -43,106 +45,143 @@ class TrendlineForm(QWidget):
         fit_layout.addWidget(self.fit_button)
         fit_layout.addWidget(self.fit_label)
 
-        # Literature controls
+        # Literature trendline controls
         self.lit_model_combo = QComboBox(self)
         self.lit_model_combo.addItems(["Linear", "Quadratic", "Power"])
         self.lit_coeff1 = QLineEdit(self)
         self.lit_coeff2 = QLineEdit(self)
         self.lit_coeff3 = QLineEdit(self)
-        self._update_lit_placeholders("Linear")
         self.lit_overlay_button = QPushButton("Overlay Literature", self)
 
         literature_form = QFormLayout()
         literature_form.addRow("Model", self.lit_model_combo)
-        literature_form.addRow("Coeff 1", self.lit_coeff1)
-        literature_form.addRow("Coeff 2", self.lit_coeff2)
-        literature_form.addRow("Coeff 3", self.lit_coeff3)
+        coeff_row = QHBoxLayout()
+        coeff_row.addWidget(self.lit_coeff1)
+        coeff_row.addWidget(self.lit_coeff2)
+        coeff_row.addWidget(self.lit_coeff3)
+        literature_form.addRow("Coefficients", coeff_row)
         literature_form.addRow(self.lit_overlay_button)
 
         literature_group = QGroupBox("Literature Trendline", self)
         literature_group.setLayout(literature_form)
 
-        # Intersections and export
-        self.intersections_button = QPushButton("Compute Intersections", self)
-        self.export_intersections_button = QPushButton("Export Intersections CSV", self)
-        self.export_residuals_button = QPushButton("Export Residuals CSV", self)
-        self.export_fits_button = QPushButton("Export Fit Params CSV", self)
+        # Intersections table and controls
+        self.intersections_table = QTableWidget(self)
+        self.intersections_table.setColumnCount(2)
+        self.intersections_table.setHorizontalHeaderLabels(["x", "y"])
+        self.intersections_table.verticalHeader().setVisible(False)
+        self.intersections_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.intersections_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.intersections_table.setSelectionMode(QTableWidget.SingleSelection)
 
-        self.table = QTableWidget(self)
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["X", "Y"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.intersections_btn = QPushButton("Compute Intersections", self)
+        self.export_intersections_btn = QPushButton("Export Intersections CSV", self)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(fit_group)
-        layout.addWidget(literature_group)
-        layout.addWidget(self.intersections_button)
-        layout.addWidget(self.export_intersections_button)
-        layout.addWidget(self.export_residuals_button)
-        layout.addWidget(self.export_fits_button)
-        layout.addWidget(self.table)
+        inter_btn_row = QHBoxLayout()
+        inter_btn_row.addWidget(self.intersections_btn)
+        inter_btn_row.addWidget(self.export_intersections_btn)
 
-        self.fit_button.clicked.connect(self._emit_fit)
-        self.lit_overlay_button.clicked.connect(self._emit_literature)
-        self.lit_model_combo.currentTextChanged.connect(self._update_lit_placeholders)
-        self.intersections_button.clicked.connect(self.intersectionsRequested.emit)
-        self.export_intersections_button.clicked.connect(
+        self.export_residuals_btn = QPushButton("Export Residuals CSV", self)
+        self.export_fits_btn = QPushButton("Export Fit Parameters CSV", self)
+
+        export_row = QHBoxLayout()
+        export_row.addWidget(self.export_residuals_btn)
+        export_row.addWidget(self.export_fits_btn)
+
+        # Compose layout
+        root = QVBoxLayout(self)
+        root.addWidget(fit_group)
+        root.addWidget(literature_group)
+        root.addLayout(inter_btn_row)
+        root.addWidget(self.intersections_table)
+        root.addLayout(export_row)
+        root.addStretch(1)
+
+        # Wire signals
+        self.fit_button.clicked.connect(self._emit_fit_requested)
+        self.lit_model_combo.currentTextChanged.connect(self._on_lit_model_changed)
+        self.lit_overlay_button.clicked.connect(self._emit_literature_overlay)
+        self.intersections_btn.clicked.connect(self.intersectionsRequested.emit)
+        self.export_intersections_btn.clicked.connect(
             self.exportIntersectionsRequested.emit
         )
-        self.export_residuals_button.clicked.connect(self.exportResidualsRequested.emit)
-        self.export_fits_button.clicked.connect(self.exportFitsRequested.emit)
+        self.export_residuals_btn.clicked.connect(self.exportResidualsRequested.emit)
+        self.export_fits_btn.clicked.connect(self.exportFitsRequested.emit)
 
-    def _emit_fit(self) -> None:
-        model = self.data_model_combo.currentText().lower()
-        self.fitRequested.emit(model)
+        # Initialize default state
+        self._on_lit_model_changed(self.lit_model_combo.currentText())
 
-    def _emit_literature(self) -> None:
-        model = self.lit_model_combo.currentText().lower()
-        try:
-            if model == "linear":
-                coeffs = (float(self.lit_coeff1.text()), float(self.lit_coeff2.text()))
-            elif model == "quadratic":
-                coeffs = (
-                    float(self.lit_coeff1.text()),
-                    float(self.lit_coeff2.text()),
-                    float(self.lit_coeff3.text()),
-                )
-            else:
-                coeffs = (
-                    float(self.lit_coeff1.text()),
-                    float(self.lit_coeff2.text()),
-                )
-        except ValueError:
-            return
-        payload = {"model": model, "coeffs": coeffs}
-        self.literatureOverlayRequested.emit(payload)
+    # --------------------------- Public API ---------------------------
+    def set_fit_summary(self, text: str) -> None:
+        """Update the fit summary label."""
 
-    def set_fit_summary(self, summary: str) -> None:
-        self.fit_label.setText(summary)
+        self.fit_label.setText(text or "No fit computed")
 
     def set_intersections(self, points: List[Tuple[float, float]]) -> None:
-        self.table.setRowCount(len(points))
-        for row, (x, y) in enumerate(points):
-            self.table.setItem(row, 0, QTableWidgetItem(f"{x:.4f}"))
-            self.table.setItem(row, 1, QTableWidgetItem(f"{y:.4f}"))
-        if not points:
-            self.table.setRowCount(0)
+        """Populate the intersections table with the provided points."""
 
-    # --- helpers
-    def _update_lit_placeholders(self, model: str) -> None:
-        model = model.lower()
-        if model == "linear":
-            self.lit_coeff1.setPlaceholderText("Slope m")
-            self.lit_coeff2.setPlaceholderText("Intercept b")
-            self.lit_coeff3.setPlaceholderText("unused")
-            self.lit_coeff3.setEnabled(False)
-        elif model == "quadratic":
-            self.lit_coeff1.setPlaceholderText("a")
-            self.lit_coeff2.setPlaceholderText("b")
-            self.lit_coeff3.setPlaceholderText("c")
+        pts = points or []
+        self.intersections_table.setRowCount(len(pts))
+        for row, (x, y) in enumerate(pts):
+            self.intersections_table.setItem(row, 0, QTableWidgetItem(f"{x:.6g}"))
+            self.intersections_table.setItem(row, 1, QTableWidgetItem(f"{y:.6g}"))
+        self.intersections_table.resizeColumnsToContents()
+
+    # --------------------------- Internal helpers ---------------------------
+    def _emit_fit_requested(self) -> None:
+        model = (self.data_model_combo.currentText() or "Linear").strip()
+        self.fitRequested.emit(model)
+
+    def _on_lit_model_changed(self, model: str) -> None:
+        self._update_lit_placeholders(model)
+        m = (model or "").lower()
+        if m == "quadratic":
+            self.lit_coeff3.setVisible(True)
             self.lit_coeff3.setEnabled(True)
         else:
-            self.lit_coeff1.setPlaceholderText("A  (y = A*x^B)")
-            self.lit_coeff2.setPlaceholderText("B")
-            self.lit_coeff3.setPlaceholderText("unused")
+            self.lit_coeff3.setVisible(False)
             self.lit_coeff3.setEnabled(False)
+            self.lit_coeff3.clear()
+
+    def _emit_literature_overlay(self) -> None:
+        model = (self.lit_model_combo.currentText() or "").strip().lower()
+        try:
+            if model == "linear":
+                m = float((self.lit_coeff1.text() or "").strip())
+                b = float((self.lit_coeff2.text() or "").strip())
+                payload = {"model": "linear", "coeffs": (m, b)}
+            elif model == "quadratic":
+                a = float((self.lit_coeff1.text() or "").strip())
+                b = float((self.lit_coeff2.text() or "").strip())
+                c = float((self.lit_coeff3.text() or "").strip())
+                payload = {"model": "quadratic", "coeffs": (a, b, c)}
+            elif model == "power":
+                A = float((self.lit_coeff1.text() or "").strip())
+                B = float((self.lit_coeff2.text() or "").strip())
+                payload = {"model": "power", "coeffs": (A, B)}
+            else:
+                QMessageBox.warning(self, "Literature", "Unsupported model.")
+                return
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Literature",
+                "Please enter valid numeric coefficients for the selected model.",
+            )
+            return
+        self.literatureOverlayRequested.emit(payload)
+
+    def _update_lit_placeholders(self, model: str) -> None:
+        m = (model or "").lower()
+        if m == "linear":
+            self.lit_coeff1.setPlaceholderText("Slope m")
+            self.lit_coeff2.setPlaceholderText("Intercept b")
+            self.lit_coeff3.setPlaceholderText("")
+        elif m == "quadratic":
+            self.lit_coeff1.setPlaceholderText("a (x^2)")
+            self.lit_coeff2.setPlaceholderText("b (x)")
+            self.lit_coeff3.setPlaceholderText("c")
+        else:
+            self.lit_coeff1.setPlaceholderText("A (scale)")
+            self.lit_coeff2.setPlaceholderText("B (exponent)")
+            self.lit_coeff3.setPlaceholderText("")

@@ -34,10 +34,8 @@ from raman_analyzer.io.session_io import load_session, save_session
 from raman_analyzer.models.session import AnalysisSession
 from raman_analyzer.plotting.plots import (
     PlotCanvas,
-    draw_box,
     draw_line,
     draw_scatter,
-    draw_violin,
     overlay_data_fit,
     overlay_literature,
     mark_intersections,
@@ -438,70 +436,105 @@ class MainWindow(QMainWindow):
         x_axis = config.get("x_axis")
         plot_type = config.get("plot_type")
 
-        if plot_type == "Box":
-            long_df = self._long_results()
-            metric_df = long_df[long_df["metric_name"] == y_metric]
-            draw_box(self.canvas.axes, metric_df, x_col="tag", y_col="value")
+        if x_axis == "Group (categorical)":
+            plot_df = df[["file", "tag", y_metric]].dropna()
+            if plot_df.empty:
+                return
+            categories = pd.Categorical(plot_df["tag"].fillna("(untagged)"))
+            numeric_x = categories.codes.astype(float)
+            plot_df = plot_df.assign(tag=categories, x=numeric_x, y=plot_df[y_metric])
+            if plot_type == "Line":
+                draw_line(self.canvas.axes, plot_df, "x", "y", hue="tag")
+            elif plot_type == "Scatter":
+                draw_scatter(
+                    self.canvas.axes,
+                    plot_df,
+                    "x",
+                    "y",
+                    hue="tag",
+                    jitter=config.get("jitter", False),
+                )
+            self.canvas.axes.set_xticks(range(len(categories.categories)))
+            self.canvas.axes.set_xticklabels(categories.categories)
+            self.canvas.axes.set_xlabel("Group")
             self.canvas.axes.set_ylabel(y_metric)
-            self.current_plot_data = None
-        elif plot_type == "Violin":
-            long_df = self._long_results()
-            metric_df = long_df[long_df["metric_name"] == y_metric]
-            draw_violin(self.canvas.axes, metric_df, x_col="tag", y_col="value")
+        elif x_axis == "Custom X (per file)":
+            if not self.session.x_mapping:
+                QMessageBox.information(
+                    self, "Plot", "Please enter X values in the File list."
+                )
+                return
+            tmp = df[["file", "tag", y_metric]].copy()
+            tmp["x"] = tmp["file"].map(self.session.x_mapping).astype(float)
+            plot_df = tmp.dropna(subset=["x", y_metric]).rename(
+                columns={y_metric: "y"}
+            )
+            # Scatter/Line with computed numeric X
+            if plot_df.empty:
+                return
+            if plot_type == "Line":
+                draw_line(self.canvas.axes, plot_df, "x", "y", hue="tag")
+            elif plot_type == "Scatter":
+                draw_scatter(
+                    self.canvas.axes,
+                    plot_df,
+                    "x",
+                    "y",
+                    hue="tag",
+                    jitter=config.get("jitter", False),
+                )
+            self.canvas.axes.set_xlabel("X")
             self.canvas.axes.set_ylabel(y_metric)
-            self.current_plot_data = None
         else:
-            if x_axis == "Group (categorical)":
-                plot_df = df[["file", "tag", y_metric]].dropna()
-                if plot_df.empty:
-                    return
-                categories = pd.Categorical(plot_df["tag"].fillna("(untagged)"))
-                numeric_x = categories.codes.astype(float)
-                plot_df = plot_df.assign(
-                    tag=categories, x=numeric_x, y=plot_df[y_metric]
+            # X-axis taken from the dataset (may be categorical or numeric)
+            if x_axis not in df.columns:
+                return
+            plot_df = df[["file", "tag", x_axis, y_metric]].dropna()
+            if plot_df.empty:
+                return
+            plot_df = plot_df.rename(columns={x_axis: "x", y_metric: "y"})
+            if plot_type == "Line":
+                draw_line(self.canvas.axes, plot_df, "x", "y", hue="tag")
+            elif plot_type == "Scatter":
+                draw_scatter(
+                    self.canvas.axes,
+                    plot_df,
+                    "x",
+                    "y",
+                    hue="tag",
+                    jitter=config.get("jitter", False),
                 )
-                if plot_type == "Line":
-                    draw_line(self.canvas.axes, plot_df, "x", "y", hue="tag")
-                else:
-                    draw_scatter(self.canvas.axes, plot_df, "x", "y", hue="tag")
-                self.canvas.axes.set_xticks(range(len(categories.categories)))
-                self.canvas.axes.set_xticklabels(categories.categories)
-                self.canvas.axes.set_xlabel("Group")
-                self.canvas.axes.set_ylabel(y_metric)
-            elif x_axis == "Custom X (per file)":
-                if not self.session.x_mapping:
-                    QMessageBox.information(
-                        self, "Plot", "Please enter X values in the File list."
-                    )
-                    return
-                tmp = df[["file", "tag", y_metric]].copy()
-                tmp["x"] = tmp["file"].map(self.session.x_mapping).astype(float)
-                plot_df = tmp.dropna(subset=["x", y_metric]).rename(
-                    columns={y_metric: "y"}
-                )
-                if plot_df.empty:
-                    return
-                if plot_type == "Line":
-                    draw_line(self.canvas.axes, plot_df, "x", "y", hue="tag")
-                else:
-                    draw_scatter(self.canvas.axes, plot_df, "x", "y", hue="tag")
-                self.canvas.axes.set_xlabel("X")
-                self.canvas.axes.set_ylabel(y_metric)
-            else:
-                if x_axis not in df.columns:
-                    return
-                plot_df = df[["file", "tag", x_axis, y_metric]].dropna()
-                if plot_df.empty:
-                    return
-                plot_df = plot_df.rename(columns={x_axis: "x", y_metric: "y"})
-                if plot_type == "Line":
-                    draw_line(self.canvas.axes, plot_df, "x", "y", hue="tag")
-                else:
-                    draw_scatter(self.canvas.axes, plot_df, "x", "y", hue="tag")
-                self.canvas.axes.set_xlabel(x_axis)
-                self.canvas.axes.set_ylabel(y_metric)
-            self.current_plot_data = plot_df[["file", "tag", "x", "y"]]
-        # Add uncertainty after drawing the primary glyphs, before overlaying fits.
+            self.canvas.axes.set_xlabel(x_axis)
+            self.canvas.axes.set_ylabel(y_metric)
+        self.current_plot_data = plot_df[["file", "tag", "x", "y"]]
+
+        # --- Box/Violin plots (categorical by tag) ---
+        if plot_type in ("Box", "Violin"):
+            # For box/violin we ignore numeric X and visualize distributions per tag (group).
+            # Build y-value lists per tag from the current data scope.
+            base = self.current_plot_data if self.current_plot_data is not None else None
+            if base is None or base.empty:
+                return
+            # Use the latest y metric values per group
+            grouped = (
+                base.dropna(subset=["y"])
+                .groupby("tag", dropna=False)["y"]
+                .apply(lambda s: s.astype(float).to_list())
+            )
+            if not len(grouped):
+                return
+            # Keep display order stable by tag name
+            labels = [str(t) for t in grouped.index.tolist()]
+            data = list(grouped.values)
+            self._draw_box_or_violin(kind=plot_type, labels=labels, data=data)
+            self.canvas.axes.set_xlabel("Group")
+            self.canvas.axes.set_ylabel(y_metric)
+            self.current_plot_config = config
+            self.canvas.draw()
+            self._overlay_trendlines()
+            return
+
+        # Add uncertainty after drawing the primary glyphs (Scatter/Line), before overlaying fits.
         if plot_type == "Scatter":
             self._add_error_bars(config.get("error_mode", "None"))
         elif plot_type == "Line":
@@ -549,6 +582,52 @@ class MainWindow(QMainWindow):
             linewidth=1,
             zorder=3,
         )
+
+    # -------- Box/Violin helpers --------
+    def _draw_box_or_violin(self, kind: str, labels: list, data: list) -> None:
+        """
+        Render a box or violin plot over per-group distributions.
+
+        Parameters
+        ----------
+        kind : {"Box", "Violin"}
+            Plot type to render.
+        labels : list[str]
+            Group labels for the x-axis.
+        data : list[list[float]]
+            Each entry is the list of y-values for the corresponding group.
+        """
+        ax = self.canvas.axes
+        ax.cla()
+        # Positions are 1..N so we can set xticks nicely
+        positions = list(range(1, len(labels) + 1))
+        if kind == "Box":
+            bp = ax.boxplot(
+                data,
+                positions=positions,
+                showmeans=True,
+                meanline=False,
+                vert=True,
+                patch_artist=True,
+            )
+            # Subtle alpha fill so distributions are visible; color per default cycle
+            for patch in bp.get("boxes", []):
+                patch.set_alpha(0.25)
+        else:  # "Violin"
+            vp = ax.violinplot(
+                data,
+                positions=positions,
+                showmeans=True,
+                showextrema=True,
+                showmedians=False,
+                vert=True,
+            )
+            # Make the violins slightly translucent
+            for body in vp.get("bodies", []):
+                body.set_alpha(0.25)
+        ax.set_xticks(positions)
+        ax.set_xticklabels(labels, rotation=0)
+        ax.grid(True, axis="y", linestyle=":", linewidth=0.5)
 
     def _overlay_trendlines(self) -> None:
         if self.current_plot_data is None or self.current_plot_data.empty:
