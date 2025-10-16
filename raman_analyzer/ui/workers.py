@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
-from raman_analyzer.io.loader import load_csvs
+from raman_analyzer.io.loader import load_csvs, load_csv_tables
 
 
 class CsvLoaderWorker(QObject):
@@ -12,6 +12,7 @@ class CsvLoaderWorker(QObject):
 
     finished = pyqtSignal(pd.DataFrame)
     error = pyqtSignal(str)
+    tablesLoaded = pyqtSignal(dict)
 
     def __init__(self, paths: list[str]) -> None:
         super().__init__()
@@ -21,8 +22,13 @@ class CsvLoaderWorker(QObject):
     def run(self) -> None:
         try:
             df = load_csvs(self._paths)
+            tables = load_csv_tables(self._paths)
         except Exception as exc:  # pragma: no cover - defensive
             self.error.emit(str(exc))
             self.finished.emit(pd.DataFrame())
             return
+        try:
+            self.tablesLoaded.emit(tables)
+        except Exception:
+            pass
         self.finished.emit(df)

@@ -1,6 +1,7 @@
 """Application session state management."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
@@ -38,6 +39,9 @@ class AnalysisSession:
     data_fit: Optional[dict] = None
     literature_fit: Optional[dict] = None
     intersections: List[tuple[float, float]] = field(default_factory=list)
+    raw_tables: Dict[str, pd.DataFrame] = field(default_factory=dict)
+    # Persisted Selection Panel state (mode, aggregator, picks)
+    selection_state: Optional[dict] = None
 
     def ensure_files(self, files: Iterable[str]) -> None:
         """Ensure that all files exist in :attr:`results_df`.
@@ -85,6 +89,30 @@ class AnalysisSession:
                 self.ensure_files([file_id])
         else:
             self.ensure_files([file_id])
+
+    # ------------------------------------------------------------------ raw tables
+    def set_raw_tables(self, tables: Dict[str, pd.DataFrame]) -> None:
+        """Store non-normalized CSV tables keyed by file identifier."""
+
+        self.raw_tables = dict(tables or {})
+
+    def get_raw_table(self, file_id: str) -> Optional[pd.DataFrame]:
+        """Retrieve a raw table matching ``file_id`` if available."""
+
+        if not self.raw_tables:
+            return None
+        if file_id in self.raw_tables:
+            return self.raw_tables[file_id]
+
+        stem, _ = os.path.splitext(file_id)
+        if stem and stem in self.raw_tables:
+            return self.raw_tables[stem]
+
+        for key, table in self.raw_tables.items():
+            k_stem, _ = os.path.splitext(key)
+            if k_stem == stem and table is not None:
+                return table
+        return None
 
     def update_metric(self, metric_name: str, values_df: pd.DataFrame) -> None:
         """Merge a metric column into :attr:`results_df`.

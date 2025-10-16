@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 import pandas as pd
-from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt, pyqtSignal
 from PyQt5.QtWidgets import QTableView, QVBoxLayout, QWidget
 
 
@@ -51,15 +51,42 @@ class DataFrameModel(QAbstractTableModel):
 class DataTableWidget(QWidget):
     """Simple wrapper displaying a DataFrame in a QTableView."""
 
+    cellPicked = pyqtSignal(str, int, int, object)
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.model = DataFrameModel()
         self.view = QTableView(self)
         self.view.setModel(self.model)
         self.view.horizontalHeader().setStretchLastSection(True)
+        self._current_file_id: Optional[str] = None
+        self.view.doubleClicked.connect(self._on_double_clicked)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.view)
 
     def set_dataframe(self, df: pd.DataFrame) -> None:
+        self._current_file_id = None
         self.model.set_dataframe(df)
+
+    def set_dataframe_for_file(self, file_id: str, df: pd.DataFrame) -> None:
+        self._current_file_id = str(file_id)
+        self.model.set_dataframe(df)
+
+    def _on_double_clicked(self, index: QModelIndex) -> None:
+        if not index.isValid() or self._current_file_id is None:
+            return
+        try:
+            value = self.model._df.iat[index.row(), index.column()]
+        except Exception:
+            return
+        try:
+            numeric_value = float(value)
+        except Exception:
+            numeric_value = value
+        self.cellPicked.emit(
+            self._current_file_id,
+            index.row() + 1,
+            index.column() + 1,
+            numeric_value,
+        )

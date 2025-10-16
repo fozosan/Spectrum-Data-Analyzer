@@ -1,6 +1,7 @@
 """CSV loading utilities for Raman data."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -80,3 +81,30 @@ def load_csvs(paths: List[str]) -> pd.DataFrame:
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True, sort=False)
     return combined
+
+
+def load_csv_tables(paths: Iterable[str]) -> Dict[str, pd.DataFrame]:
+    """Load each CSV *as-is* and return a mapping of file identifiers to tables.
+
+    Multiple keys are generated for each file so downstream callers can reuse
+    whichever identifier matches their tidy data:
+
+    - Basename including the extension (e.g. ``foo.csv``)
+    - Basename stem without extension (e.g. ``foo``)
+    - Absolute path to the file
+    """
+
+    tables: Dict[str, pd.DataFrame] = {}
+    for path_str in paths:
+        try:
+            df = pd.read_csv(path_str)
+        except Exception:
+            # Skip unreadable files but keep loading the rest.
+            continue
+        base = os.path.basename(path_str)
+        stem, _ = os.path.splitext(base)
+        tables[base] = df
+        if stem:
+            tables[stem] = df
+        tables[os.path.abspath(path_str)] = df
+    return tables
