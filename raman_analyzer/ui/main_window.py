@@ -501,8 +501,11 @@ class MainWindow(QMainWindow):
                 self.canvas.axes.set_xlabel(x_axis)
                 self.canvas.axes.set_ylabel(y_metric)
             self.current_plot_data = plot_df[["file", "tag", "x", "y"]]
+        # Add uncertainty after drawing the primary glyphs, before overlaying fits.
         if plot_type == "Scatter":
             self._add_error_bars(config.get("error_mode", "None"))
+        elif plot_type == "Line":
+            self._shade_line_uncertainty(config.get("error_mode", "None"))
 
         self.current_plot_config = config
         self.canvas.draw()
@@ -563,6 +566,52 @@ class MainWindow(QMainWindow):
                     unique[label] = handle
             self.canvas.axes.legend(unique.values(), unique.keys())
         self.canvas.draw()
+
+    # -------- Line-plot uncertainty shading --------
+    def _shade_line_uncertainty(self, mode: str) -> None:
+        """For line plots, draw a shaded band (SD/SEM/95% CI) around the mean line per tag."""
+        if (
+            self.current_plot_data is None
+            or self.current_plot_data.empty
+            or mode == "None"
+        ):
+            return
+        grouped = compute_error_table(self.current_plot_data, mode=mode)
+        if grouped.empty:
+            return
+
+        # Map plotted group lines to their colors so the band matches.
+        # We call this before overlaying fits, so the only lines should be the groups.
+        line_colors: dict[str, str] = {}
+        for line in self.canvas.axes.get_lines():
+            label = line.get_label()
+            if label:
+                try:
+                    color = line.get_color()
+                except Exception:
+                    color = None
+                if color:
+                    line_colors[str(label)] = color
+
+        for tag, g in grouped.groupby("tag", dropna=False):
+            # Only shade where we have a positive, finite uncertainty and finite mean.
+            mask = (
+                np.isfinite(g["mean"])
+                & np.isfinite(g["yerr"])
+                & (g["yerr"] > 0)
+            )
+            if not mask.any():
+                continue
+            sg = g.loc[mask].sort_values("x")
+            x = sg["x"].to_numpy(dtype=float, copy=False)
+            m = sg["mean"].to_numpy(dtype=float, copy=False)
+            e = sg["yerr"].to_numpy(dtype=float, copy=False)
+            lower = m - e
+            upper = m + e
+            color = line_colors.get(str(tag), None)
+            self.canvas.axes.fill_between(
+                x, lower, upper, alpha=0.2, linewidth=0, color=color, zorder=1
+            )
 
     # ------------------------------------------------------------------ Trendlines
     def _format_fit_summary(self, fit: Optional[dict]) -> str:
@@ -772,6 +821,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Group stats saved to {path}", 5000)
 
     def _export_residuals(self) -> None:
+        """Export a CSV combining current XY, model predictions, and residuals."""
         if self.current_plot_data is None or self.current_plot_data.empty:
             QMessageBox.information(self, "Export Residuals", "No plot data available.")
             return
@@ -780,34 +830,50 @@ class MainWindow(QMainWindow):
                 self, "Export Residuals", "No data fit to compare against."
             )
             return
+
         fit = self.session.data_fit
-        model = fit.get("model")
-        coeffs = fit.get("coeffs", ())
+        model = str(fit.get("model", "")).lower()
+        coeffs = tuple(fit.get("coeffs", ()))
         df = self.current_plot_data.copy()
         x = df["x"].astype(float).to_numpy()
-        if model == "linear" and len(coeffs) == 2:
+
+        if model == "linear" and len(coeffs) >= 2:
             y_hat = coeffs[0] * x + coeffs[1]
-        elif model == "quadratic" and len(coeffs) == 3:
+        elif model == "quadratic" and len(coeffs) >= 3:
             y_hat = coeffs[0] * x**2 + coeffs[1] * x + coeffs[2]
-        elif model == "power" and len(coeffs) == 2:
+        elif model == "power" and len(coeffs) >= 2:
             y_hat = np.where(x > 0, coeffs[0] * np.power(x, coeffs[1]), np.nan)
         else:
             QMessageBox.warning(
                 self, "Export Residuals", "Unsupported or incomplete fit model."
             )
             return
-        df["y_hat"] = y_hat
-        df["residual"] = df["y"].astype(float) - df["y_hat"]
+
+        # Compose output: XY + prediction + residuals
+        df_out = df.copy()
+        df_out["y_fit"] = y_hat
+        df_out["residual"] = df_out["y"].astype(float) - df_out["y_fit"]
+
+        # Use friendly headers aligned with the current plot configuration.
+        x_label = "x"
+        y_label = "y"
+        if self.current_plot_config:
+            x_label = self.current_plot_config.get("x_axis", x_label) or x_label
+            y_label = self.current_plot_config.get("y_axis", y_label) or y_label
+        save_df = df_out.rename(columns={"x": x_label, "y": y_label})
+
+        default_name = f"data_fit_residuals_{y_label}.csv"
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export residuals CSV",
-            "residuals.csv",
-            "CSV Files (*.csv)",
+            self, "Export Data + Residuals CSV", default_name, "CSV Files (*.csv)"
         )
         if not path:
             return
-        df.to_csv(path, index=False, columns=["file", "tag", "x", "y", "y_hat", "residual"])
-        self.statusBar().showMessage(f"Residuals exported to {path}", 5000)
+        try:
+            save_df.to_csv(path, index=False)
+        except Exception as exc:  # pragma: no cover - defensive
+            QMessageBox.warning(self, "Export Residuals", f"Failed to save CSV:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Data + residuals exported to {path}", 5000)
 
     def _export_intersections(self) -> None:
         points = self.session.intersections

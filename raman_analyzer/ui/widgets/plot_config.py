@@ -35,8 +35,10 @@ class PlotConfigWidget(QWidget):
         self.error_mode_combo = QComboBox(self)
         self.error_mode_combo.addItems(["None", "SD", "SEM", "95% CI"])
         self.error_mode_combo.setToolTip(
-            "Applies to Scatter: SD (sample std), SEM (std/√n), or 95% CI using t-critical values.\n"
-            "Groups with fewer than two points omit error bars."
+            "Applies to Scatter and Line.\n"
+            "• Scatter: draws error bars per group/x (SD, SEM, or 95% CI via t-critical).\n"
+            "• Line: draws a shaded band around the mean line using the chosen mode.\n"
+            "Groups with fewer than two points omit uncertainty."
         )
 
         self.xmin_edit = QLineEdit(self)
@@ -203,4 +205,6 @@ class PlotConfigWidget(QWidget):
         self.plotRequested.emit(config)
 
     def _toggle_error_mode_enabled(self, plot_type: str) -> None:
-        self.error_mode_combo.setEnabled(plot_type == "Scatter")
+        # Enable uncertainty control for both Scatter (error bars)
+        # and Line (shaded band).
+        self.error_mode_combo.setEnabled(plot_type in ("Scatter", "Line"))
