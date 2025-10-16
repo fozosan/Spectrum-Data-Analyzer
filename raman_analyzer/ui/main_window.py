@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QMainWindow,
     QMessageBox,
+    QScrollArea,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -111,26 +112,33 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.file_list)
         left_layout.addWidget(self.data_table)
 
-        # Right pane: controls + plot
-        right_widget = QWidget(splitter)
-        right_layout = QVBoxLayout(right_widget)
-        self.calc_builder = CalcBuilderWidget(right_widget)
-        self.selection_panel = SelectionPanel(right_widget)
-        self.plot_config = PlotConfigWidget(right_widget)
-        self.trendline_form = TrendlineForm(right_widget)
+        # Right pane: controls + plot (scrollable so the Selection Panel is always reachable)
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        self.selection_panel = SelectionPanel(right_container)
+        self.calc_builder = CalcBuilderWidget(right_container)
+        self.plot_config = PlotConfigWidget(right_container)
+        self.trendline_form = TrendlineForm(right_container)
         self.canvas = PlotCanvas()
-        self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_widget)
+        self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_container)
 
+        # Put Selection Panel first so it’s obvious
         right_layout.addWidget(self.selection_panel)
         right_layout.addWidget(self.calc_builder)
         right_layout.addWidget(self.plot_config)
         right_layout.addWidget(self.trendline_form)
         right_layout.addWidget(self.toolbar_canvas)
         right_layout.addWidget(self.canvas)
+        right_layout.addStretch(1)
+
+        right_scroll = QScrollArea(splitter)
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setWidget(right_container)
 
         splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
+        splitter.addWidget(right_scroll)
         splitter.setStretchFactor(1, 1)
+        splitter.setSizes([360, 960])  # give the right pane enough initial real estate
 
         central_layout.addWidget(splitter)
 

@@ -65,10 +65,11 @@ class SelectionPanel(QWidget):
         self.agg_combo.setToolTip("How to combine multiple picks per component.")
 
         # Target radios (rebuilt on mode change)
-        self.targets_box = QGroupBox("Arm target", self)
+        self.targets_box = QGroupBox("Arm target — double-click grid to add", self)
         self.targets_layout = QVBoxLayout(self.targets_box)
         self._target_radios: List[QRadioButton] = []
         self._target_radio_map: Dict[str, QRadioButton] = {}
+        self.armed_label = QLabel("", self)
 
         # Auto-populate controls
         self.row_spin = QSpinBox(self)
@@ -77,7 +78,7 @@ class SelectionPanel(QWidget):
         self.col_spin.setMinimum(1)
         self.scope_combo = QComboBox(self)
         self.scope_combo.addItems(["Selected", "All"])
-        self.autofill_btn = QPushButton("Auto-populate", self)
+        self.autofill_btn = QPushButton("Auto-populate into target", self)
 
         # A/B tables
         self.tableA = QTableWidget(self)
@@ -107,7 +108,8 @@ class SelectionPanel(QWidget):
         self.clearB_btn = QPushButton("Clear B", self)
 
         # Layout
-        config_form = QFormLayout()
+        config_box = QGroupBox("Manual Selection (Single / Ratio / Difference)", self)
+        config_form = QFormLayout(config_box)
         config_form.addRow("Mode", self.mode_combo)
         config_form.addRow("Aggregator", self.agg_combo)
 
@@ -143,8 +145,9 @@ class SelectionPanel(QWidget):
         lists_row.addLayout(colB)
 
         root = QVBoxLayout(self)
-        root.addLayout(config_form)
+        root.addWidget(config_box)
         root.addWidget(self.targets_box)
+        root.addWidget(self.armed_label)
         root.addLayout(autopop_row)
         root.addLayout(lists_row)
         root.addStretch(1)
@@ -160,6 +163,7 @@ class SelectionPanel(QWidget):
 
         # Initialize mode
         self._rebuild_target_radios("Single")
+        self._update_armed_ui()
 
     # ----------------------------- Public API -----------------------------
     def set_context(self, file_to_tag: Dict[str, str]) -> None:
@@ -330,16 +334,19 @@ class SelectionPanel(QWidget):
             _add_radio("B: Left", "B.left", False)
             _add_radio("B: Right", "B.right", False)
             self._armed = "A.left"
+        self._update_armed_ui()
 
     def _on_arm(self, key: str, checked: bool) -> None:
         if checked:
             self._armed = key
+            self._update_armed_ui()
 
     def _set_armed_radio(self, key: str) -> None:
         self._armed = key
         radio = self._target_radio_map.get(key)
         if radio is not None and not radio.isChecked():
             radio.setChecked(True)
+        self._update_armed_ui()
 
     def _on_autofill(self) -> None:
         target = self._armed
@@ -347,6 +354,25 @@ class SelectionPanel(QWidget):
         col1 = int(self.col_spin.value())
         scope = self.scope_combo.currentText()  # 'Selected' or 'All'
         self.autopopulateRequested.emit(target, row1, col1, scope)
+        # Button text reflects the armed target; no further updates needed here.
+
+    def _update_armed_ui(self) -> None:
+        """Update helper text and button label for the currently armed target."""
+        friendly_labels = {
+            "A.single": "A (single)",
+            "B.single": "B (single)",
+            "A.num": "A: Numerator",
+            "A.den": "A: Denominator",
+            "B.num": "B: Numerator",
+            "B.den": "B: Denominator",
+            "A.left": "A: Left",
+            "A.right": "A: Right",
+            "B.left": "B: Left",
+            "B.right": "B: Right",
+        }
+        label = friendly_labels.get(self._armed, self._armed.replace(".", ": "))
+        self.armed_label.setText(f"Target: {label}")
+        self.autofill_btn.setText(f"Auto-populate into {label}")
 
     def _blank_picks(self) -> Dict[str, Dict[str, Dict[str, List[Tuple[int, int, float]]]]]:
         components = ("single", "num", "den", "left", "right")
