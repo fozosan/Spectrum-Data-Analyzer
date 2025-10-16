@@ -42,6 +42,9 @@ def session_to_dict(session: AnalysisSession) -> Dict[str, Any]:
             if isinstance(point, (list, tuple)) and len(point) >= 2
         ],
     }
+    selection_state = getattr(session, "selection_state", None)
+    if isinstance(selection_state, dict):
+        payload["selection_state"] = selection_state
     return payload
 
 
@@ -85,6 +88,10 @@ def session_from_dict(data: Dict[str, Any]) -> AnalysisSession:
             except (TypeError, ValueError):
                 continue
     sess.intersections = points
+
+    sel_state = data.get("selection_state")
+    if isinstance(sel_state, dict):
+        sess.selection_state = sel_state
     return sess
 
 
