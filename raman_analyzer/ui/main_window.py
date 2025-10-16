@@ -821,6 +821,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Group stats saved to {path}", 5000)
 
     def _export_residuals(self) -> None:
+        """Export a CSV combining current XY, model predictions, and residuals."""
         if self.current_plot_data is None or self.current_plot_data.empty:
             QMessageBox.information(self, "Export Residuals", "No plot data available.")
             return
@@ -829,34 +830,50 @@ class MainWindow(QMainWindow):
                 self, "Export Residuals", "No data fit to compare against."
             )
             return
+
         fit = self.session.data_fit
-        model = fit.get("model")
-        coeffs = fit.get("coeffs", ())
+        model = str(fit.get("model", "")).lower()
+        coeffs = tuple(fit.get("coeffs", ()))
         df = self.current_plot_data.copy()
         x = df["x"].astype(float).to_numpy()
-        if model == "linear" and len(coeffs) == 2:
+
+        if model == "linear" and len(coeffs) >= 2:
             y_hat = coeffs[0] * x + coeffs[1]
-        elif model == "quadratic" and len(coeffs) == 3:
+        elif model == "quadratic" and len(coeffs) >= 3:
             y_hat = coeffs[0] * x**2 + coeffs[1] * x + coeffs[2]
-        elif model == "power" and len(coeffs) == 2:
+        elif model == "power" and len(coeffs) >= 2:
             y_hat = np.where(x > 0, coeffs[0] * np.power(x, coeffs[1]), np.nan)
         else:
             QMessageBox.warning(
                 self, "Export Residuals", "Unsupported or incomplete fit model."
             )
             return
-        df["y_hat"] = y_hat
-        df["residual"] = df["y"].astype(float) - df["y_hat"]
+
+        # Compose output: XY + prediction + residuals
+        df_out = df.copy()
+        df_out["y_fit"] = y_hat
+        df_out["residual"] = df_out["y"].astype(float) - df_out["y_fit"]
+
+        # Use friendly headers aligned with the current plot configuration.
+        x_label = "x"
+        y_label = "y"
+        if self.current_plot_config:
+            x_label = self.current_plot_config.get("x_axis", x_label) or x_label
+            y_label = self.current_plot_config.get("y_axis", y_label) or y_label
+        save_df = df_out.rename(columns={"x": x_label, "y": y_label})
+
+        default_name = f"data_fit_residuals_{y_label}.csv"
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export residuals CSV",
-            "residuals.csv",
-            "CSV Files (*.csv)",
+            self, "Export Data + Residuals CSV", default_name, "CSV Files (*.csv)"
         )
         if not path:
             return
-        df.to_csv(path, index=False, columns=["file", "tag", "x", "y", "y_hat", "residual"])
-        self.statusBar().showMessage(f"Residuals exported to {path}", 5000)
+        try:
+            save_df.to_csv(path, index=False)
+        except Exception as exc:  # pragma: no cover - defensive
+            QMessageBox.warning(self, "Export Residuals", f"Failed to save CSV:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Data + residuals exported to {path}", 5000)
 
     def _export_intersections(self) -> None:
         points = self.session.intersections
