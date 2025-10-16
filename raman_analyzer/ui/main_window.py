@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QMainWindow,
     QMessageBox,
+    QScrollArea,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -44,6 +45,7 @@ from raman_analyzer.ui.widgets.calc_builder import CalcBuilderWidget
 from raman_analyzer.ui.widgets.data_table import DataTableWidget
 from raman_analyzer.ui.widgets.file_list import FileListWidget
 from raman_analyzer.ui.widgets.plot_config import PlotConfigWidget
+from raman_analyzer.ui.widgets.selection_panel import SelectionPanel
 from raman_analyzer.ui.widgets.trendline_form import TrendlineForm
 from raman_analyzer.ui.workers import CsvLoaderWorker
 
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self._loader_thread: Optional[QThread] = None
         self._loader_worker: Optional[CsvLoaderWorker] = None
         self._load_failed: bool = False
+        self._current_grid_file: Optional[str] = None
 
     # ------------------------------------------------------------------ UI setup
     def _create_actions(self) -> None:
@@ -109,24 +112,33 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.file_list)
         left_layout.addWidget(self.data_table)
 
-        # Right pane: controls + plot
-        right_widget = QWidget(splitter)
-        right_layout = QVBoxLayout(right_widget)
-        self.calc_builder = CalcBuilderWidget(right_widget)
-        self.plot_config = PlotConfigWidget(right_widget)
-        self.trendline_form = TrendlineForm(right_widget)
+        # Right pane: controls + plot (scrollable so the Selection Panel is always reachable)
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        self.selection_panel = SelectionPanel(right_container)
+        self.calc_builder = CalcBuilderWidget(right_container)
+        self.plot_config = PlotConfigWidget(right_container)
+        self.trendline_form = TrendlineForm(right_container)
         self.canvas = PlotCanvas()
-        self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_widget)
+        self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_container)
 
+        # Put Selection Panel first so it’s obvious
+        right_layout.addWidget(self.selection_panel)
         right_layout.addWidget(self.calc_builder)
         right_layout.addWidget(self.plot_config)
         right_layout.addWidget(self.trendline_form)
         right_layout.addWidget(self.toolbar_canvas)
         right_layout.addWidget(self.canvas)
+        right_layout.addStretch(1)
+
+        right_scroll = QScrollArea(splitter)
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setWidget(right_container)
 
         splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
+        splitter.addWidget(right_scroll)
         splitter.setStretchFactor(1, 1)
+        splitter.setSizes([360, 960])  # give the right pane enough initial real estate
 
         central_layout.addWidget(splitter)
 
@@ -137,7 +149,10 @@ class MainWindow(QMainWindow):
         self.file_list.tagChanged.connect(self._on_tag_changed)
         self.file_list.selectionChanged.connect(self._on_file_selected)
         self.file_list.xChanged.connect(self._on_x_changed)
+        self.data_table.cellPicked.connect(self._on_cell_picked)
         self.calc_builder.metricComputed.connect(self._on_metric_computed)
+        self.selection_panel.autopopulateRequested.connect(self._on_autopopulate_requested)
+        self.selection_panel.metricsUpdated.connect(self._on_selection_metrics_updated)
         self.plot_config.plotRequested.connect(self._on_plot_requested)
         self.plot_config.exportMetricsRequested.connect(self._export_metrics)
         self.plot_config.exportPlotRequested.connect(self._export_plot)
@@ -179,6 +194,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_csvs_loaded)
+        worker.tablesLoaded.connect(self._on_tables_loaded)
         worker.error.connect(self._on_csv_load_error)
         worker.finished.connect(lambda _: thread.quit())
         worker.finished.connect(worker.deleteLater)
@@ -203,6 +219,7 @@ class MainWindow(QMainWindow):
             files, self.session.file_to_tag, self.session.x_mapping or {}
         )
         self.calc_builder.set_data(df, self.session.file_to_tag)
+        self.selection_panel.set_context(self.session.file_to_tag)
         available_attrs = [
             col
             for col in ["area", "height", "fwhm", "center", "area_pct"]
@@ -215,6 +232,20 @@ class MainWindow(QMainWindow):
         self._on_file_selected(files[:1])
         self.statusBar().showMessage(f"Loaded {len(files)} files", 5000)
         self._load_failed = False
+
+    def _on_tables_loaded(self, tables: dict) -> None:
+        self.session.set_raw_tables(tables or {})
+        self.selection_panel.set_context(self.session.file_to_tag)
+        files = self.file_list.selected_files
+        if not files and not self.session.raw_df.empty and "file" in self.session.raw_df.columns:
+            try:
+                files = (
+                    self.session.raw_df["file"].dropna().astype(str).unique().tolist()
+                )
+            except Exception:
+                files = []
+        if files:
+            self._show_grid_for_file(files[0])
 
     def _on_csv_load_error(self, message: str) -> None:  # pragma: no cover - GUI warning
         self._load_failed = True
@@ -232,6 +263,10 @@ class MainWindow(QMainWindow):
             # Persist the visible widget state even if the user hasn't clicked Plot yet.
             cfg = self.plot_config.current_config()
             self.session.plot_config = cfg if cfg else None
+            try:
+                self.session.selection_state = self.selection_panel.get_state()
+            except Exception:
+                self.session.selection_state = None
             save_session(path, self.session)
         except Exception as exc:  # pragma: no cover - defensive feedback
             QMessageBox.warning(self, "Save Session", f"Failed to save session:\n{exc}")
@@ -250,8 +285,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Load Session", f"Failed to load session:\n{exc}")
             return
 
+        self.selection_panel.blockSignals(True)
+        try:
+            self.selection_panel.apply_state({})
+        finally:
+            self.selection_panel.blockSignals(False)
+
         self.session = sess
         self.current_plot_config = None
+        self.selection_panel.set_context(self.session.file_to_tag)
         df = self.session.raw_df if self.session.raw_df is not None else pd.DataFrame()
         if df.empty:
             QMessageBox.information(
@@ -262,6 +304,7 @@ class MainWindow(QMainWindow):
             self.file_list.set_files([], {}, {})
             self.data_table.set_dataframe(pd.DataFrame())
             self.calc_builder.set_data(pd.DataFrame(), {})
+            self.selection_panel.set_context({})
             self.calc_builder.set_available_attributes(
                 ["area", "height", "fwhm", "center", "area_pct"]
             )
@@ -283,6 +326,7 @@ class MainWindow(QMainWindow):
             self.file_list.set_files([], {}, {})
             self.data_table.set_dataframe(pd.DataFrame())
             self.calc_builder.set_data(df, {})
+            self.selection_panel.set_context({})
             self.calc_builder.set_available_attributes(
                 ["area", "height", "fwhm", "center", "area_pct"]
             )
@@ -324,6 +368,7 @@ class MainWindow(QMainWindow):
             files, self.session.file_to_tag, self.session.x_mapping or {}
         )
         self.calc_builder.set_data(df, self.session.file_to_tag)
+        self.selection_panel.set_context(self.session.file_to_tag)
         available_attrs = [
             col
             for col in ["area", "height", "fwhm", "center", "area_pct"]
@@ -334,6 +379,13 @@ class MainWindow(QMainWindow):
         self._on_file_selected(files[:1])
         self.trendline_form.set_fit_summary(self._format_fit_summary(self.session.data_fit))
         self.trendline_form.set_intersections(self.session.intersections)
+
+        try:
+            sel_state = getattr(self.session, "selection_state", None)
+            if isinstance(sel_state, dict) and sel_state:
+                self.selection_panel.apply_state(sel_state)
+        except Exception:
+            pass
 
         restored_cfg = getattr(self.session, "plot_config", None)
         if isinstance(restored_cfg, dict):
@@ -371,16 +423,128 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ File interactions
     def _on_file_selected(self, files: List[str]) -> None:
         if not files:
+            self._current_grid_file = None
             self.data_table.set_dataframe(pd.DataFrame())
             return
-        if self.session.raw_df.empty:
+        self._show_grid_for_file(files[0])
+
+    def _show_grid_for_file(self, file_id: str) -> None:
+        self._current_grid_file = file_id
+        table = self.session.get_raw_table(file_id)
+        if table is None or table.empty:
+            if not self.session.raw_df.empty and "file" in self.session.raw_df.columns:
+                try:
+                    subset = self.session.raw_df[
+                        self.session.raw_df["file"].astype(str) == str(file_id)
+                    ]
+                except Exception:
+                    subset = pd.DataFrame()
+            else:
+                subset = pd.DataFrame()
+            self.data_table.set_dataframe_for_file(file_id, subset)
+            if subset.empty:
+                self.statusBar().showMessage(f"No raw grid for '{file_id}'", 4000)
+            else:
+                self.statusBar().showMessage(
+                    f"No raw grid for '{file_id}', showing tidy rows", 4000
+                )
             return
-        subset = self.session.raw_df[self.session.raw_df["file"].isin(files)]
-        self.data_table.set_dataframe(subset)
+        self.data_table.set_dataframe_for_file(file_id, table)
+        self.statusBar().showMessage(f"Showing grid for '{file_id}'", 2000)
+
+    def _on_cell_picked(self, file_id: str, row1: int, col1: int, value: object) -> None:
+        try:
+            numeric = float(value)
+        except Exception:
+            return
+        tag = self.session.file_to_tag.get(str(file_id), "")
+        self.selection_panel.add_pick(
+            str(file_id),
+            int(row1),
+            int(col1),
+            float(numeric),
+            target=None,
+            tag=tag,
+        )
+        self.statusBar().showMessage(
+            f"Picked {numeric:.6g} from {file_id} ({row1},{col1})",
+            2500,
+        )
+
+    def _on_autopopulate_requested(self, target: str, row1: int, col1: int, scope: str) -> None:
+        if scope == "Selected":
+            files = list(self.file_list.selected_files)
+        else:
+            try:
+                if not self.session.raw_df.empty and "file" in self.session.raw_df.columns:
+                    files = (
+                        self.session.raw_df["file"].dropna().astype(str).unique().tolist()
+                    )
+                else:
+                    files = []
+            except Exception:
+                files = []
+        if not files:
+            self.statusBar().showMessage("No files to populate.", 3000)
+            return
+        added = 0
+        r0 = int(row1) - 1
+        c0 = int(col1) - 1
+        for file_id in files:
+            table = self.session.get_raw_table(file_id)
+            if table is None or table.empty:
+                continue
+            if r0 < 0 or c0 < 0:
+                continue
+            try:
+                cell = table.iat[r0, c0]
+            except Exception:
+                continue
+            try:
+                value = float(cell)
+            except Exception:
+                continue
+            tag = self.session.file_to_tag.get(str(file_id), "")
+            self.selection_panel.add_pick(
+                str(file_id),
+                int(row1),
+                int(col1),
+                float(value),
+                target=target,
+                tag=tag,
+            )
+            added += 1
+        self.statusBar().showMessage(
+            f"Auto-populated {added} value(s) to {target}",
+            4000,
+        )
+
+    def _on_selection_metrics_updated(self, a_payload: object, b_payload: object) -> None:
+        try:
+            a_name, a_df = a_payload  # type: ignore[misc]
+            b_name, b_df = b_payload  # type: ignore[misc]
+        except Exception:
+            return
+        if isinstance(a_df, pd.DataFrame):
+            a_values = a_df[["file", "value"]] if not a_df.empty else pd.DataFrame(
+                columns=["file", "value"]
+            )
+            self.session.update_metric(str(a_name), a_values)
+        if isinstance(b_df, pd.DataFrame):
+            b_values = b_df[["file", "value"]] if not b_df.empty else pd.DataFrame(
+                columns=["file", "value"]
+            )
+            self.session.update_metric(str(b_name), b_values)
+        self._update_plot_metrics()
+        try:
+            self.session.selection_state = self.selection_panel.get_state()
+        except Exception:
+            self.session.selection_state = None
 
     def _on_tag_changed(self, file_id: str, tag: str) -> None:
         self.session.set_tag(file_id, tag)
         self.calc_builder.set_data(self.session.raw_df, self.session.file_to_tag)
+        self.selection_panel.set_context(self.session.file_to_tag)
         self._update_plot_metrics()
 
     def _on_x_changed(self, file_id: str, x_value: object) -> None:
@@ -406,9 +570,19 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Metric '{metric_name}' computed", 5000)
 
     def _update_plot_metrics(self) -> None:
+        """Refresh the plot metric dropdowns from results_df with friendly ordering.
+
+        We pin Selection A/B at the top (if present), then list all other metrics.
+        """
         df = self.session.results_df
-        metrics = [col for col in df.columns if col not in {"file", "tag"}]
-        self.plot_config.set_metrics(metrics)
+        if df is None or df.empty:
+            self.plot_config.set_metrics([])
+            return
+        cols = [col for col in df.columns if col not in {"file", "tag"}]
+        preferred = ["Selection A", "Selection B"]
+        pinned = [col for col in preferred if col in cols]
+        rest = [col for col in cols if col not in pinned]
+        self.plot_config.set_metrics(pinned + rest)
 
     def _long_results(self) -> pd.DataFrame:
         df = self.session.results_df
