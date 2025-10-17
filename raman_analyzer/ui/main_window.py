@@ -11,12 +11,13 @@ from PyQt5.QtWidgets import (
     QAction,
     QFileDialog,
     QMainWindow,
+    QMenu,
     QMessageBox,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
     QWidget,
-    QTabWidget,
 )
 
 from raman_analyzer.analysis.grouping import compute_error_table
@@ -72,7 +73,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ UI setup
     def _create_actions(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("File")
 
         open_action = QAction("Load CSVs", self)
         open_action.triggered.connect(self._load_csvs)
@@ -93,7 +95,35 @@ class MainWindow(QMainWindow):
         self.toolbar.addAction(open_action)
         self.toolbar.addAction(import_map_action)
 
-        help_menu = self.menuBar().addMenu("Help")
+        view_menu = menubar.addMenu("View")
+        panels_menu: QMenu = view_menu.addMenu("Panels")
+
+        self.action_toggle_selection = QAction("Show Selection Panel", self)
+        self.action_toggle_selection.setCheckable(True)
+        self.action_toggle_selection.setChecked(True)
+
+        self.action_toggle_metrics = QAction("Show Metric Builder", self)
+        self.action_toggle_metrics.setCheckable(True)
+        self.action_toggle_metrics.setChecked(True)
+
+        self.action_toggle_plotcfg = QAction("Show Plot Config", self)
+        self.action_toggle_plotcfg.setCheckable(True)
+        self.action_toggle_plotcfg.setChecked(True)
+
+        self.action_toggle_trend = QAction("Show Trendline Form", self)
+        self.action_toggle_trend.setCheckable(True)
+        self.action_toggle_trend.setChecked(True)
+
+        self.action_reset_layout = QAction("Reset Layout", self)
+
+        panels_menu.addAction(self.action_toggle_selection)
+        panels_menu.addAction(self.action_toggle_metrics)
+        panels_menu.addAction(self.action_toggle_plotcfg)
+        panels_menu.addAction(self.action_toggle_trend)
+        panels_menu.addSeparator()
+        panels_menu.addAction(self.action_reset_layout)
+
+        help_menu = menubar.addMenu("Help")
         quickstart_action = QAction("Quick Start", self)
         quickstart_action.triggered.connect(self._show_quick_start)
         help_menu.addAction(quickstart_action)
@@ -112,32 +142,39 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.file_list)
         left_layout.addWidget(self.data_table)
 
-        # Right pane: tabs + plot
+        # Right pane: controls and plot
         right_widget = QWidget(splitter)
         right_layout = QVBoxLayout(right_widget)
 
-        # Tabs for manual Selections (A/B) and legacy Metric Builder
-        self.tabs = QTabWidget(right_widget)
-        self.selection_panel = SelectionPanel(self.tabs)
-        self.calc_builder = CalcBuilderWidget(self.tabs)
-        self.tabs.addTab(self.selection_panel, "Selections")
-        self.tabs.addTab(self.calc_builder, "Metric Builder")
-        self.tabs.setCurrentIndex(0)  # default to Selections
-
-        # Plot controls below tabs
+        self.selection_panel = SelectionPanel(right_widget)
+        self.calc_builder = CalcBuilderWidget(right_widget)
         self.plot_config = PlotConfigWidget(right_widget)
         self.trendline_form = TrendlineForm(right_widget)
         self.canvas = PlotCanvas()
         self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_widget)
 
-        right_layout.addWidget(self.tabs)
-        right_layout.addWidget(self.plot_config)
-        right_layout.addWidget(self.trendline_form)
+        self.selection_panel.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding
+        )
+
+        # Put Selection Panel first, make it clearly visible
+        right_layout.addWidget(self.selection_panel)  # A/B picks live here
+        right_layout.addWidget(self.calc_builder)  # legacy Metric Builder
+        right_layout.addWidget(self.plot_config)  # plot setup
+        right_layout.addWidget(self.trendline_form)  # trendline tools
         right_layout.addWidget(self.toolbar_canvas)
         right_layout.addWidget(self.canvas)
 
+        right_layout.setStretch(0, 2)
+        right_layout.setStretch(1, 1)
+        right_layout.setStretch(2, 1)
+        right_layout.setStretch(3, 1)
+        right_layout.setStretch(4, 0)
+        right_layout.setStretch(5, 3)
+
         splitter.addWidget(left_widget)
         splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([360, 960])  # give the right pane enough initial real estate
 
@@ -145,6 +182,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar(self))
+        self._reset_layout(show_message=False)
 
     def _connect_signals(self) -> None:
         self.file_list.tagChanged.connect(self._on_tag_changed)
@@ -167,6 +205,12 @@ class MainWindow(QMainWindow):
         )
         self.trendline_form.exportFitsRequested.connect(self._export_fit_params)
         self.trendline_form.exportResidualsRequested.connect(self._export_residuals)
+
+        self.action_toggle_selection.toggled.connect(self.selection_panel.setVisible)
+        self.action_toggle_metrics.toggled.connect(self.calc_builder.setVisible)
+        self.action_toggle_plotcfg.toggled.connect(self.plot_config.setVisible)
+        self.action_toggle_trend.toggled.connect(self.trendline_form.setVisible)
+        self.action_reset_layout.triggered.connect(self._reset_layout)
 
     # ------------------------------------------------------------------ Loading data
     def _load_csvs(self) -> None:
@@ -420,6 +464,27 @@ class MainWindow(QMainWindow):
             "5) (Optional) Fit data trendline, overlay literature, compute intersections.\n"
             "6) Export metrics/plot/residuals/intersections from the buttons.",
         )
+
+    def _reset_layout(self, checked: bool = False, *, show_message: bool = True) -> None:
+        """Ensure all key panels are visible and toggle states are in sync."""
+
+        _ = checked  # unused, but retained for QAction.triggered signature
+        pairs = (
+            (self.action_toggle_selection, self.selection_panel),
+            (self.action_toggle_metrics, self.calc_builder),
+            (self.action_toggle_plotcfg, self.plot_config),
+            (self.action_toggle_trend, self.trendline_form),
+        )
+
+        for action, widget in pairs:
+            if not action.isChecked():
+                action.blockSignals(True)
+                action.setChecked(True)
+                action.blockSignals(False)
+            widget.setVisible(True)
+
+        if show_message and self.statusBar():
+            self.statusBar().showMessage("Layout reset", 2000)
 
     # ------------------------------------------------------------------ File interactions
     def _on_file_selected(self, files: List[str]) -> None:
