@@ -47,6 +47,9 @@ class SelectionPanel(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        # Claim enough space to stay visible when embedded in layouts.
+        self.setMinimumHeight(220)
+        self.setMinimumWidth(400)
 
         self._mode = "Single"  # 'Single' | 'Ratio' | 'Difference'
         self._armed: str = "A.single"  # one of target keys
