@@ -12,11 +12,11 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QMainWindow,
     QMessageBox,
-    QScrollArea,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
     QWidget,
+    QTabWidget,
 )
 
 from raman_analyzer.analysis.grouping import compute_error_table
@@ -112,31 +112,32 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.file_list)
         left_layout.addWidget(self.data_table)
 
-        # Right pane: controls + plot (scrollable so the Selection Panel is always reachable)
-        right_container = QWidget()
-        right_layout = QVBoxLayout(right_container)
-        self.selection_panel = SelectionPanel(right_container)
-        self.calc_builder = CalcBuilderWidget(right_container)
-        self.plot_config = PlotConfigWidget(right_container)
-        self.trendline_form = TrendlineForm(right_container)
-        self.canvas = PlotCanvas()
-        self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_container)
+        # Right pane: tabs + plot
+        right_widget = QWidget(splitter)
+        right_layout = QVBoxLayout(right_widget)
 
-        # Put Selection Panel first so it’s obvious
-        right_layout.addWidget(self.selection_panel)
-        right_layout.addWidget(self.calc_builder)
+        # Tabs for new manual Selections (A/B) and legacy Metric Builder
+        self.tabs = QTabWidget(right_widget)
+        self.selection_panel = SelectionPanel(self.tabs)
+        self.calc_builder = CalcBuilderWidget(self.tabs)
+        self.tabs.addTab(self.selection_panel, "Selections")
+        self.tabs.addTab(self.calc_builder, "Metric Builder")
+        self.tabs.setCurrentIndex(0)
+
+        # Plot controls below tabs
+        self.plot_config = PlotConfigWidget(right_widget)
+        self.trendline_form = TrendlineForm(right_widget)
+        self.canvas = PlotCanvas()
+        self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_widget)
+
+        right_layout.addWidget(self.tabs)
         right_layout.addWidget(self.plot_config)
         right_layout.addWidget(self.trendline_form)
         right_layout.addWidget(self.toolbar_canvas)
         right_layout.addWidget(self.canvas)
-        right_layout.addStretch(1)
-
-        right_scroll = QScrollArea(splitter)
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setWidget(right_container)
 
         splitter.addWidget(left_widget)
-        splitter.addWidget(right_scroll)
+        splitter.addWidget(right_widget)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([360, 960])  # give the right pane enough initial real estate
 
