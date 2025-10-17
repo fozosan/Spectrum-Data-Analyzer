@@ -1,18 +1,7 @@
-"""Entry point for running the Raman Analyzer as a module."""
+from __future__ import annotations
 
-from PyQt5.QtWidgets import QApplication
-
-from raman_analyzer.ui.main_window import MainWindow
-
-import sys
-
-
-def main() -> None:
-    """Launch the Raman Analyzer main window."""
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+# Thin shim: supports `python -m raman_analyzer`
+from .app import main
 
 
 if __name__ == "__main__":
