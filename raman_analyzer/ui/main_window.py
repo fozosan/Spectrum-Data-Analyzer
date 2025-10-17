@@ -116,13 +116,13 @@ class MainWindow(QMainWindow):
         right_widget = QWidget(splitter)
         right_layout = QVBoxLayout(right_widget)
 
-        # Tabs for new manual Selections (A/B) and legacy Metric Builder
+        # Tabs for manual Selections (A/B) and legacy Metric Builder
         self.tabs = QTabWidget(right_widget)
         self.selection_panel = SelectionPanel(self.tabs)
         self.calc_builder = CalcBuilderWidget(self.tabs)
         self.tabs.addTab(self.selection_panel, "Selections")
         self.tabs.addTab(self.calc_builder, "Metric Builder")
-        self.tabs.setCurrentIndex(0)
+        self.tabs.setCurrentIndex(0)  # default to Selections
 
         # Plot controls below tabs
         self.plot_config = PlotConfigWidget(right_widget)

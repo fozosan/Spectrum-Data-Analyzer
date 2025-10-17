@@ -1,3 +1,2 @@
-"""Top-level package for the Raman Analyzer application."""
-
-from .models.session import AnalysisSession  # noqa: F401
+__all__ = []
+__version__ = "0.1.0"

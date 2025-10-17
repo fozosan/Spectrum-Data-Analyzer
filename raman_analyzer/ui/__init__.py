@@ -1,1 +1,1 @@
-"""User interface package for the Raman Analyzer application."""
+# Marks 'raman_analyzer.ui' as a regular package.
