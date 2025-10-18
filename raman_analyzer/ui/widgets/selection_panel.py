@@ -22,7 +22,7 @@ import pandas as pd
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
-    QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -36,8 +36,6 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
-    QSplitter,
-    QSizePolicy,
 )
 
 
@@ -53,10 +51,9 @@ class SelectionPanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         # Claim enough space to stay visible when embedded in layouts.
-        self.setMinimumHeight(220)
-        self.setMinimumWidth(400)
-        current_policy = self.sizePolicy()
-        self.setSizePolicy(current_policy.horizontalPolicy(), QSizePolicy.Preferred)
+        self.setMinimumHeight(240)
+        self.setMinimumWidth(420)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         self._mode = "Single"  # 'Single' | 'Ratio' | 'Difference'
         self._armed: str = "A.single"  # one of target keys
@@ -69,18 +66,23 @@ class SelectionPanel(QWidget):
 
         self.mode_combo = QComboBox(self)
         self.mode_combo.addItems(["Single", "Ratio", "Difference"])
+        self.mode_combo.setMinimumWidth(140)
 
         self.agg_combo = QComboBox(self)
         self.agg_combo.addItems(["Mean", "Sum"])
         self.agg_combo.setToolTip("How to combine multiple picks per component.")
+        self.agg_combo.setMinimumWidth(140)
 
-        # Target radios (rebuilt on mode change)
-        self.targets_box = QGroupBox("Arm target — double-click grid to add", self)
-        self.targets_layout = QVBoxLayout(self.targets_box)
+        # Target radios (rebuilt on mode change) — put radios inside a dedicated box
+        self.targets_box = QGroupBox("Armed target", self)
+        self.targets_layout = QHBoxLayout(self.targets_box)
+        self.targets_layout.setContentsMargins(8, 4, 8, 4)
+        self.targets_layout.setSpacing(12)
         self._target_radios: List[QRadioButton] = []
         self._target_radio_map: Dict[str, QRadioButton] = {}
-        self.armed_label = QLabel("", self)
-        self.targets_box.setMinimumHeight(96)
+        self.armed_label = QLabel(
+            "Double-click a value in the left grid to add to the armed target.", self
+        )
 
         # Auto-populate controls
         self.row_spin = QSpinBox(self)
@@ -97,7 +99,7 @@ class SelectionPanel(QWidget):
         for table in (self.tableA, self.tableB):
             table.setColumnCount(7)
             table.setHorizontalHeaderLabels(["file", "tag", "component", "row", "col", "value", "count/agg"])
-            table.verticalHeader().setVisible(True)
+            table.verticalHeader().setVisible(False)
             table.setEditTriggers(QTableWidget.NoEditTriggers)
             table.setSelectionBehavior(QTableWidget.SelectRows)
             table.setSelectionMode(QTableWidget.SingleSelection)
@@ -126,7 +128,7 @@ class SelectionPanel(QWidget):
             horizontal = table.horizontalHeader()
             row_height = vertical.defaultSectionSize()
             header_height = horizontal.height()
-            table.setMinimumHeight(header_height + row_height * rows + 8)
+            table.setMinimumHeight(header_height + row_height * rows + 12)
             horizontal.setSectionResizeMode(QHeaderView.Interactive)
             horizontal.setStretchLastSection(True)
 
@@ -140,15 +142,26 @@ class SelectionPanel(QWidget):
         self.removeB_btn = QPushButton("Remove Selected (B)", self)
         self.clearB_btn = QPushButton("Clear B", self)
 
-        # Layout
-        config_box = QGroupBox("Manual Selection (Single / Ratio / Difference)", self)
-        config_form = QFormLayout(config_box)
-        config_form.addRow("Mode", self.mode_combo)
-        config_form.addRow("Aggregator", self.agg_combo)
-        config_box.setMinimumHeight(72)
-        self.mode_combo.setMinimumWidth(140)
-        self.agg_combo.setMinimumWidth(140)
+        # ---------- Manual Selection (top) ----------
+        manual_box = QGroupBox("Manual Selection (Single / Ratio / Difference)", self)
+        manual_grid = QGridLayout(manual_box)
+        manual_grid.setContentsMargins(8, 8, 8, 8)
+        manual_grid.setHorizontalSpacing(12)
+        manual_grid.setVerticalSpacing(6)
 
+        # Row 0: Mode + Aggregator
+        manual_grid.addWidget(QLabel("Mode"), 0, 0)
+        manual_grid.addWidget(self.mode_combo, 0, 1)
+        manual_grid.addWidget(QLabel("Aggregator"), 0, 2)
+        manual_grid.addWidget(self.agg_combo, 0, 3)
+
+        # Row 1: helper label
+        manual_grid.addWidget(self.armed_label, 1, 0, 1, 4)
+
+        # Row 2: radios box
+        manual_grid.addWidget(self.targets_box, 2, 0, 1, 4)
+
+        # Row 3: autopopulate row
         autopop_row = QHBoxLayout()
         autopop_row.addWidget(QLabel("Row:"))
         autopop_row.addWidget(self.row_spin)
@@ -157,16 +170,12 @@ class SelectionPanel(QWidget):
         autopop_row.addWidget(QLabel("Across:"))
         autopop_row.addWidget(self.scope_combo)
         autopop_row.addWidget(self.autofill_btn)
-
-        # --- Top controls container ---
-        controls_frame = QWidget(self)
-        controls_layout = QVBoxLayout(controls_frame)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(6)
-        controls_layout.addWidget(config_box)
-        controls_layout.addWidget(self.targets_box)
-        controls_layout.addWidget(self.armed_label)
-        controls_layout.addLayout(autopop_row)
+        autopop_row.addStretch(1)
+        autopop_widget = QWidget(self)
+        autopop_widget.setLayout(autopop_row)
+        manual_grid.addWidget(autopop_widget, 3, 0, 1, 4)
+        manual_grid.setColumnStretch(1, 1)
+        manual_grid.setColumnStretch(3, 1)
 
         # --- Lists area ---
         # Column A
@@ -211,13 +220,13 @@ class SelectionPanel(QWidget):
         lists_splitter.setStretchFactor(0, 1)
         lists_splitter.setStretchFactor(1, 1)
 
-        # Root layout uses vertical splitter so lists are resizable
+        # Root: manual controls on top, lists at bottom (resizable vertically)
         root_splitter = QSplitter(Qt.Vertical, self)
-        root_splitter.addWidget(controls_frame)
+        root_splitter.addWidget(manual_box)
         root_splitter.addWidget(lists_splitter)
         root_splitter.setStretchFactor(0, 0)
         root_splitter.setStretchFactor(1, 1)
-        root_splitter.setSizes([280, 480])
+        root_splitter.setSizes([220, 520])
         lists_splitter.setSizes([1, 1])
 
         root = QVBoxLayout(self)
@@ -406,6 +415,7 @@ class SelectionPanel(QWidget):
             _add_radio("B: Left", "B.left", False)
             _add_radio("B: Right", "B.right", False)
             self._armed = "A.left"
+        self.targets_layout.addStretch(1)
         self._update_armed_ui()
 
     def _on_arm(self, key: str, checked: bool) -> None:
@@ -443,7 +453,9 @@ class SelectionPanel(QWidget):
             "B.right": "B: Right",
         }
         label = friendly_labels.get(self._armed, self._armed.replace(".", ": "))
-        self.armed_label.setText(f"Target: {label}")
+        self.armed_label.setText(
+            f"Armed target: {label}. Double-click a value in the left grid to add it."
+        )
         self.autofill_btn.setText(f"Auto-populate into {label}")
 
     def _blank_picks(self) -> Dict[str, Dict[str, Dict[str, List[Tuple[int, int, float]]]]]:
