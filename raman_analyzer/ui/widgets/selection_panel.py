@@ -25,10 +25,13 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QRadioButton,
     QSpinBox,
+    QSplitter,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -52,6 +55,8 @@ class SelectionPanel(QWidget):
         # Claim enough space to stay visible when embedded in layouts.
         self.setMinimumHeight(220)
         self.setMinimumWidth(400)
+        current_policy = self.sizePolicy()
+        self.setSizePolicy(current_policy.horizontalPolicy(), QSizePolicy.Preferred)
 
         self._mode = "Single"  # 'Single' | 'Ratio' | 'Difference'
         self._armed: str = "A.single"  # one of target keys
@@ -75,6 +80,7 @@ class SelectionPanel(QWidget):
         self._target_radios: List[QRadioButton] = []
         self._target_radio_map: Dict[str, QRadioButton] = {}
         self.armed_label = QLabel("", self)
+        self.targets_box.setMinimumHeight(96)
 
         # Auto-populate controls
         self.row_spin = QSpinBox(self)
@@ -91,7 +97,7 @@ class SelectionPanel(QWidget):
         for table in (self.tableA, self.tableB):
             table.setColumnCount(7)
             table.setHorizontalHeaderLabels(["file", "tag", "component", "row", "col", "value", "count/agg"])
-            table.verticalHeader().setVisible(False)
+            table.verticalHeader().setVisible(True)
             table.setEditTriggers(QTableWidget.NoEditTriggers)
             table.setSelectionBehavior(QTableWidget.SelectRows)
             table.setSelectionMode(QTableWidget.SingleSelection)
@@ -100,8 +106,8 @@ class SelectionPanel(QWidget):
         self.previewA = QTableWidget(self)
         self.previewB = QTableWidget(self)
         for table in (self.previewA, self.previewB):
-            table.setColumnCount(3)
-            table.setHorizontalHeaderLabels(["file", "tag", "value"])
+            table.setColumnCount(2)
+            table.setHorizontalHeaderLabels(["file", "value"])
             table.verticalHeader().setVisible(False)
             table.setEditTriggers(QTableWidget.NoEditTriggers)
             table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -114,6 +120,21 @@ class SelectionPanel(QWidget):
             table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             table.setWordWrap(False)
 
+        # Helper: enforce a minimum height of roughly five rows for tables
+        def _enforce_min_rows(table: QTableWidget, rows: int = 5) -> None:
+            vertical = table.verticalHeader()
+            horizontal = table.horizontalHeader()
+            row_height = vertical.defaultSectionSize()
+            header_height = horizontal.height()
+            table.setMinimumHeight(header_height + row_height * rows + 8)
+            horizontal.setSectionResizeMode(QHeaderView.Interactive)
+            horizontal.setStretchLastSection(True)
+
+        _enforce_min_rows(self.tableA, rows=5)
+        _enforce_min_rows(self.tableB, rows=5)
+        _enforce_min_rows(self.previewA, rows=5)
+        _enforce_min_rows(self.previewB, rows=5)
+
         self.removeA_btn = QPushButton("Remove Selected (A)", self)
         self.clearA_btn = QPushButton("Clear A", self)
         self.removeB_btn = QPushButton("Remove Selected (B)", self)
@@ -124,6 +145,9 @@ class SelectionPanel(QWidget):
         config_form = QFormLayout(config_box)
         config_form.addRow("Mode", self.mode_combo)
         config_form.addRow("Aggregator", self.agg_combo)
+        config_box.setMinimumHeight(72)
+        self.mode_combo.setMinimumWidth(140)
+        self.agg_combo.setMinimumWidth(140)
 
         autopop_row = QHBoxLayout()
         autopop_row.addWidget(QLabel("Row:"))
@@ -193,6 +217,8 @@ class SelectionPanel(QWidget):
         root_splitter.addWidget(lists_splitter)
         root_splitter.setStretchFactor(0, 0)
         root_splitter.setStretchFactor(1, 1)
+        root_splitter.setSizes([280, 480])
+        lists_splitter.setSizes([1, 1])
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -573,26 +599,30 @@ class SelectionPanel(QWidget):
             table.setItem(row, 6, QTableWidgetItem(display))
 
     def _refresh_preview(self, table: QTableWidget, df: pd.DataFrame) -> None:
-        """Fill a compact 'file, tag, value' table for the computed bucket."""
+        """Fill a compact 'file, value' table for the computed bucket."""
         if df is None or df.empty:
             table.setRowCount(0)
             return
-        rows: List[Tuple[str, str, object]] = []
+        rows: List[Tuple[str, object, str]] = []
         for _, series in df.iterrows():
             file_id = str(series.get("file", ""))
             value = series.get("value", math.nan)
             tag = self._file_to_tag.get(file_id, "")
-            rows.append((file_id, tag, value))
+            rows.append((file_id, value, tag))
         table.setRowCount(len(rows))
-        for idx, (file_id, tag, value) in enumerate(rows):
+        for idx, (file_id, value, tag) in enumerate(rows):
             table.setItem(idx, 0, QTableWidgetItem(file_id))
-            table.setItem(idx, 1, QTableWidgetItem(tag))
+            if tag:
+                table.item(idx, 0).setToolTip(tag)
             if pd.isna(value):
-                table.setItem(idx, 2, QTableWidgetItem(""))
+                table.setItem(idx, 1, QTableWidgetItem(""))
             else:
                 try:
                     formatted = f"{float(value):.6g}"
                 except Exception:
                     formatted = str(value)
-                table.setItem(idx, 2, QTableWidgetItem(formatted))
+                value_item = QTableWidgetItem(formatted)
+                if tag:
+                    value_item.setToolTip(tag)
+                table.setItem(idx, 1, value_item)
         table.resizeColumnsToContents()
