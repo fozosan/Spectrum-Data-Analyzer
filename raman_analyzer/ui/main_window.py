@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QStatusBar,
     QVBoxLayout,
     QWidget,
+    QScrollArea,
 )
 
 from raman_analyzer.analysis.grouping import compute_error_table
@@ -42,7 +43,6 @@ from raman_analyzer.plotting.plots import (
     overlay_literature,
     mark_intersections,
 )
-from raman_analyzer.ui.widgets.calc_builder import CalcBuilderWidget
 from raman_analyzer.ui.widgets.data_table import DataTableWidget
 from raman_analyzer.ui.widgets.file_list import FileListWidget
 from raman_analyzer.ui.widgets.plot_config import PlotConfigWidget
@@ -102,10 +102,6 @@ class MainWindow(QMainWindow):
         self.action_toggle_selection.setCheckable(True)
         self.action_toggle_selection.setChecked(True)
 
-        self.action_toggle_metrics = QAction("Show Metric Builder", self)
-        self.action_toggle_metrics.setCheckable(True)
-        self.action_toggle_metrics.setChecked(True)
-
         self.action_toggle_plotcfg = QAction("Show Plot Config", self)
         self.action_toggle_plotcfg.setCheckable(True)
         self.action_toggle_plotcfg.setChecked(True)
@@ -117,7 +113,6 @@ class MainWindow(QMainWindow):
         self.action_reset_layout = QAction("Reset Layout", self)
 
         panels_menu.addAction(self.action_toggle_selection)
-        panels_menu.addAction(self.action_toggle_metrics)
         panels_menu.addAction(self.action_toggle_plotcfg)
         panels_menu.addAction(self.action_toggle_trend)
         panels_menu.addSeparator()
@@ -137,46 +132,71 @@ class MainWindow(QMainWindow):
         # Left pane: file list + data table
         left_widget = QWidget(splitter)
         left_layout = QVBoxLayout(left_widget)
-        self.file_list = FileListWidget(left_widget)
-        self.data_table = DataTableWidget(left_widget)
-        left_layout.addWidget(self.file_list)
-        left_layout.addWidget(self.data_table)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_splitter = QSplitter(Qt.Vertical, left_widget)
+        self.file_list = FileListWidget(left_splitter)
+        self.data_table = DataTableWidget(left_splitter)
+        left_splitter.addWidget(self.file_list)
+        left_splitter.addWidget(self.data_table)
+        left_splitter.setStretchFactor(0, 1)
+        left_splitter.setStretchFactor(1, 2)
+        left_splitter.setSizes([240, 520])
+        left_layout.addWidget(left_splitter)
 
-        # Right pane: controls and plot
+        # Right pane: controls (scrollable) + plot
         right_widget = QWidget(splitter)
         right_layout = QVBoxLayout(right_widget)
 
-        self.selection_panel = SelectionPanel(right_widget)
-        self.calc_builder = CalcBuilderWidget(right_widget)
-        self.plot_config = PlotConfigWidget(right_widget)
-        self.trendline_form = TrendlineForm(right_widget)
+        # Controls container inside a scroll area
+        controls_container = QWidget(right_widget)
+        controls_layout = QVBoxLayout(controls_container)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+
+        self.selection_panel = SelectionPanel(controls_container)
+        self.plot_config = PlotConfigWidget(controls_container)
+        self.trendline_form = TrendlineForm(controls_container)
+
+        controls_layout.addWidget(self.selection_panel)
+        controls_layout.addWidget(self.plot_config)
+        controls_layout.addWidget(self.trendline_form)
+        controls_layout.addStretch(1)
+
+        controls_scroll = QScrollArea(right_widget)
+        controls_scroll.setWidget(controls_container)
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        controls_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        controls_scroll.setFrameShape(QScrollArea.NoFrame)
+        controls_container.setMinimumWidth(980)
+        right_widget.setMinimumWidth(980)
+
+        # Plot area keeps canvas visible
         self.canvas = PlotCanvas()
+        self.canvas.setMinimumHeight(280)
         self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_widget)
+        plot_box = QWidget(right_widget)
+        plot_layout = QVBoxLayout(plot_box)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self.toolbar_canvas)
+        plot_layout.addWidget(self.canvas)
 
-        self.selection_panel.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Expanding
-        )
+        right_splitter = QSplitter(Qt.Vertical, right_widget)
+        right_splitter.addWidget(controls_scroll)
+        right_splitter.addWidget(plot_box)
+        right_splitter.setStretchFactor(0, 0)
+        right_splitter.setStretchFactor(1, 1)
+        # Give the plot generous height by default (users can drag to resize)
+        right_splitter.setSizes([520, 620])
 
-        # Put Selection Panel first, make it clearly visible
-        right_layout.addWidget(self.selection_panel)  # A/B picks live here
-        right_layout.addWidget(self.calc_builder)  # legacy Metric Builder
-        right_layout.addWidget(self.plot_config)  # plot setup
-        right_layout.addWidget(self.trendline_form)  # trendline tools
-        right_layout.addWidget(self.toolbar_canvas)
-        right_layout.addWidget(self.canvas)
-
-        right_layout.setStretch(0, 2)
-        right_layout.setStretch(1, 1)
-        right_layout.setStretch(2, 1)
-        right_layout.setStretch(3, 1)
-        right_layout.setStretch(4, 0)
-        right_layout.setStretch(5, 3)
+        right_layout.addWidget(right_splitter)
 
         splitter.addWidget(left_widget)
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([360, 960])  # give the right pane enough initial real estate
+        splitter.setSizes([360, 1060])
 
         central_layout.addWidget(splitter)
 
@@ -189,7 +209,6 @@ class MainWindow(QMainWindow):
         self.file_list.selectionChanged.connect(self._on_file_selected)
         self.file_list.xChanged.connect(self._on_x_changed)
         self.data_table.cellPicked.connect(self._on_cell_picked)
-        self.calc_builder.metricComputed.connect(self._on_metric_computed)
         self.selection_panel.autopopulateRequested.connect(self._on_autopopulate_requested)
         self.selection_panel.metricsUpdated.connect(self._on_selection_metrics_updated)
         self.plot_config.plotRequested.connect(self._on_plot_requested)
@@ -207,7 +226,6 @@ class MainWindow(QMainWindow):
         self.trendline_form.exportResidualsRequested.connect(self._export_residuals)
 
         self.action_toggle_selection.toggled.connect(self.selection_panel.setVisible)
-        self.action_toggle_metrics.toggled.connect(self.calc_builder.setVisible)
         self.action_toggle_plotcfg.toggled.connect(self.plot_config.setVisible)
         self.action_toggle_trend.toggled.connect(self.trendline_form.setVisible)
         self.action_reset_layout.triggered.connect(self._reset_layout)
@@ -263,16 +281,7 @@ class MainWindow(QMainWindow):
         self.file_list.set_files(
             files, self.session.file_to_tag, self.session.x_mapping or {}
         )
-        self.calc_builder.set_data(df, self.session.file_to_tag)
         self.selection_panel.set_context(self.session.file_to_tag)
-        available_attrs = [
-            col
-            for col in ["area", "height", "fwhm", "center", "area_pct"]
-            if col in df.columns
-        ]
-        if not available_attrs:
-            available_attrs = ["area", "height", "fwhm", "center", "area_pct"]
-        self.calc_builder.set_available_attributes(available_attrs)
         self._update_plot_metrics()
         self._on_file_selected(files[:1])
         self.statusBar().showMessage(f"Loaded {len(files)} files", 5000)
@@ -332,7 +341,8 @@ class MainWindow(QMainWindow):
 
         self.selection_panel.blockSignals(True)
         try:
-            self.selection_panel.apply_state({})
+            if hasattr(self.selection_panel, "apply_state"):
+                self.selection_panel.apply_state({})
         finally:
             self.selection_panel.blockSignals(False)
 
@@ -348,11 +358,7 @@ class MainWindow(QMainWindow):
             )
             self.file_list.set_files([], {}, {})
             self.data_table.set_dataframe(pd.DataFrame())
-            self.calc_builder.set_data(pd.DataFrame(), {})
             self.selection_panel.set_context({})
-            self.calc_builder.set_available_attributes(
-                ["area", "height", "fwhm", "center", "area_pct"]
-            )
             self.plot_config.set_metrics([])
             self.current_plot_data = None
             self.canvas.axes.cla()
@@ -370,11 +376,7 @@ class MainWindow(QMainWindow):
             )
             self.file_list.set_files([], {}, {})
             self.data_table.set_dataframe(pd.DataFrame())
-            self.calc_builder.set_data(df, {})
             self.selection_panel.set_context({})
-            self.calc_builder.set_available_attributes(
-                ["area", "height", "fwhm", "center", "area_pct"]
-            )
             self.plot_config.set_metrics([])
             self.current_plot_data = None
             self.canvas.axes.cla()
@@ -393,13 +395,6 @@ class MainWindow(QMainWindow):
             )
             self.file_list.set_files([], self.session.file_to_tag, self.session.x_mapping or {})
             self.data_table.set_dataframe(pd.DataFrame())
-            self.calc_builder.set_data(df, self.session.file_to_tag)
-            available_attrs = [
-                col
-                for col in ["area", "height", "fwhm", "center", "area_pct"]
-                if col in df.columns
-            ] or ["area", "height", "fwhm", "center", "area_pct"]
-            self.calc_builder.set_available_attributes(available_attrs)
             self.plot_config.set_metrics([])
             self.current_plot_data = None
             self.canvas.axes.cla()
@@ -412,14 +407,7 @@ class MainWindow(QMainWindow):
         self.file_list.set_files(
             files, self.session.file_to_tag, self.session.x_mapping or {}
         )
-        self.calc_builder.set_data(df, self.session.file_to_tag)
         self.selection_panel.set_context(self.session.file_to_tag)
-        available_attrs = [
-            col
-            for col in ["area", "height", "fwhm", "center", "area_pct"]
-            if col in df.columns
-        ] or ["area", "height", "fwhm", "center", "area_pct"]
-        self.calc_builder.set_available_attributes(available_attrs)
         self._update_plot_metrics()
         self._on_file_selected(files[:1])
         self.trendline_form.set_fit_summary(self._format_fit_summary(self.session.data_fit))
@@ -459,7 +447,7 @@ class MainWindow(QMainWindow):
             "Quick Start",
             "1) Load CSVs of peak fits.\n"
             "2) Assign Tags/X in the left table or import a mapping CSV.\n"
-            "3) In 'Metric Builder', choose a mode (e.g., Ratio or Normalized Area) and Compute.\n"
+            "3) Use 'Manual Selection' to click-pick A/B values or auto-populate across files.\n"
             "4) Configure the plot (X/Y, type, error bars) and click Plot.\n"
             "5) (Optional) Fit data trendline, overlay literature, compute intersections.\n"
             "6) Export metrics/plot/residuals/intersections from the buttons.",
@@ -471,7 +459,6 @@ class MainWindow(QMainWindow):
         _ = checked  # unused, but retained for QAction.triggered signature
         pairs = (
             (self.action_toggle_selection, self.selection_panel),
-            (self.action_toggle_metrics, self.calc_builder),
             (self.action_toggle_plotcfg, self.plot_config),
             (self.action_toggle_trend, self.trendline_form),
         )
@@ -609,7 +596,6 @@ class MainWindow(QMainWindow):
 
     def _on_tag_changed(self, file_id: str, tag: str) -> None:
         self.session.set_tag(file_id, tag)
-        self.calc_builder.set_data(self.session.raw_df, self.session.file_to_tag)
         self.selection_panel.set_context(self.session.file_to_tag)
         self._update_plot_metrics()
 
@@ -629,12 +615,6 @@ class MainWindow(QMainWindow):
             self._on_plot_requested(self.current_plot_config)
 
     # ------------------------------------------------------------------ Metrics handling
-    def _on_metric_computed(self, metric_name: str, long_df: pd.DataFrame) -> None:
-        per_file = long_df[["file", "value"]]
-        self.session.update_metric(metric_name, per_file)
-        self._update_plot_metrics()
-        self.statusBar().showMessage(f"Metric '{metric_name}' computed", 5000)
-
     def _update_plot_metrics(self) -> None:
         """Refresh the plot metric dropdowns from results_df with friendly ordering.
 
