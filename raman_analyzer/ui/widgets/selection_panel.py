@@ -36,6 +36,8 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSplitter,
+    QSizePolicy,
 )
 
 
