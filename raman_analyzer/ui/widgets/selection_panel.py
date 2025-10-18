@@ -19,7 +19,7 @@ import math
 import statistics
 
 import pandas as pd
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -33,6 +33,8 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSplitter,
+    QSizePolicy,
 )
 
 
@@ -105,6 +107,13 @@ class SelectionPanel(QWidget):
             table.setSelectionBehavior(QTableWidget.SelectRows)
             table.setSelectionMode(QTableWidget.NoSelection)
 
+        # Ensure all tables expand and scroll as needed inside splitters
+        for table in (self.tableA, self.tableB, self.previewA, self.previewB):
+            table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            table.setWordWrap(False)
+
         self.removeA_btn = QPushButton("Remove Selected (A)", self)
         self.clearA_btn = QPushButton("Clear A", self)
         self.removeB_btn = QPushButton("Remove Selected (B)", self)
@@ -125,35 +134,69 @@ class SelectionPanel(QWidget):
         autopop_row.addWidget(self.scope_combo)
         autopop_row.addWidget(self.autofill_btn)
 
-        lists_row = QHBoxLayout()
-        colA = QVBoxLayout()
-        colA.addWidget(QLabel("Selection A"))
-        colA.addWidget(self.tableA)
-        rowA = QHBoxLayout()
-        rowA.addWidget(self.removeA_btn)
-        rowA.addWidget(self.clearA_btn)
-        colA.addLayout(rowA)
-        colA.addWidget(QLabel("Computed A (per file)"))
-        colA.addWidget(self.previewA)
-        colB = QVBoxLayout()
-        colB.addWidget(QLabel("Selection B"))
-        colB.addWidget(self.tableB)
-        rowB = QHBoxLayout()
-        rowB.addWidget(self.removeB_btn)
-        rowB.addWidget(self.clearB_btn)
-        colB.addLayout(rowB)
-        colB.addWidget(QLabel("Computed B (per file)"))
-        colB.addWidget(self.previewB)
-        lists_row.addLayout(colA)
-        lists_row.addLayout(colB)
+        # --- Top controls container ---
+        controls_frame = QWidget(self)
+        controls_layout = QVBoxLayout(controls_frame)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+        controls_layout.addWidget(config_box)
+        controls_layout.addWidget(self.targets_box)
+        controls_layout.addWidget(self.armed_label)
+        controls_layout.addLayout(autopop_row)
+
+        # --- Lists area ---
+        # Column A
+        a_buttons_row = QHBoxLayout()
+        a_buttons_row.addWidget(self.removeA_btn)
+        a_buttons_row.addWidget(self.clearA_btn)
+        a_buttons_widget = QWidget(self)
+        a_buttons_widget.setLayout(a_buttons_row)
+
+        column_a = QWidget(self)
+        column_a_layout = QVBoxLayout(column_a)
+        column_a_layout.addWidget(QLabel("Selection A"))
+        column_a_layout.addWidget(self.tableA)
+        column_a_layout.addWidget(a_buttons_widget)
+        column_a_layout.addWidget(QLabel("Computed A (per file)"))
+        column_a_layout.addWidget(self.previewA)
+        column_a_layout.setStretch(1, 1)
+        column_a_layout.setStretch(3, 0)
+        column_a_layout.setStretch(4, 1)
+
+        # Column B
+        b_buttons_row = QHBoxLayout()
+        b_buttons_row.addWidget(self.removeB_btn)
+        b_buttons_row.addWidget(self.clearB_btn)
+        b_buttons_widget = QWidget(self)
+        b_buttons_widget.setLayout(b_buttons_row)
+
+        column_b = QWidget(self)
+        column_b_layout = QVBoxLayout(column_b)
+        column_b_layout.addWidget(QLabel("Selection B"))
+        column_b_layout.addWidget(self.tableB)
+        column_b_layout.addWidget(b_buttons_widget)
+        column_b_layout.addWidget(QLabel("Computed B (per file)"))
+        column_b_layout.addWidget(self.previewB)
+        column_b_layout.setStretch(1, 1)
+        column_b_layout.setStretch(3, 0)
+        column_b_layout.setStretch(4, 1)
+
+        lists_splitter = QSplitter(Qt.Horizontal, self)
+        lists_splitter.addWidget(column_a)
+        lists_splitter.addWidget(column_b)
+        lists_splitter.setStretchFactor(0, 1)
+        lists_splitter.setStretchFactor(1, 1)
+
+        # Root layout uses vertical splitter so lists are resizable
+        root_splitter = QSplitter(Qt.Vertical, self)
+        root_splitter.addWidget(controls_frame)
+        root_splitter.addWidget(lists_splitter)
+        root_splitter.setStretchFactor(0, 0)
+        root_splitter.setStretchFactor(1, 1)
 
         root = QVBoxLayout(self)
-        root.addWidget(config_box)
-        root.addWidget(self.targets_box)
-        root.addWidget(self.armed_label)
-        root.addLayout(autopop_row)
-        root.addLayout(lists_row)
-        root.addStretch(1)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(root_splitter)
 
         # Wire
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
@@ -413,33 +456,45 @@ class SelectionPanel(QWidget):
         self._recompute_and_emit()
 
     def _remove_selected(self, bucket: str) -> None:
-        """Remove the highlighted row from Selection A/B (exact pick deletion)."""
+        """Remove the highlighted rows from Selection A/B (exact pick deletion)."""
         table = self.tableA if bucket == "A" else self.tableB
-        row = table.currentRow()
-        if row < 0:
+        selection = table.selectionModel()
+        if selection is None:
             return
-        file_item = table.item(row, 0)
-        comp_item = table.item(row, 2)
-        r_item = table.item(row, 3)
-        c_item = table.item(row, 4)
-        v_item = table.item(row, 5)
-        if not (file_item and comp_item and r_item and c_item and v_item):
+        rows = sorted({index.row() for index in selection.selectedRows()})
+        if not rows:
             return
-        file_id = file_item.text()
-        comp = comp_item.text()
-        try:
-            r1 = int(r_item.text())
-            c1 = int(c_item.text())
-            val = float(v_item.text())
-        except Exception:
+
+        to_remove: List[Tuple[str, str, int, int, float]] = []
+        for row in rows:
+            file_item = table.item(row, 0)
+            comp_item = table.item(row, 2)
+            r_item = table.item(row, 3)
+            c_item = table.item(row, 4)
+            v_item = table.item(row, 5)
+            if not (file_item and comp_item and r_item and c_item and v_item):
+                continue
+            try:
+                r1 = int(r_item.text())
+                c1 = int(c_item.text())
+                val = float(v_item.text())
+            except Exception:
+                continue
+            to_remove.append((file_item.text(), comp_item.text(), r1, c1, val))
+
+        if not to_remove:
             return
-        lst = self._picks[bucket].get(comp, {}).get(file_id, [])
-        for idx, (rr, cc, vv) in enumerate(lst):
-            if rr == r1 and cc == c1 and abs(vv - val) <= 1e-12:
-                del lst[idx]
-                break
-        if not lst and file_id in self._picks[bucket].get(comp, {}):
-            self._picks[bucket][comp].pop(file_id, None)
+
+        for file_id, comp, r1, c1, val in to_remove:
+            comp_map = self._picks[bucket].get(comp, {})
+            lst = comp_map.get(file_id, [])
+            for idx, (rr, cc, vv) in enumerate(lst):
+                if rr == r1 and cc == c1 and abs(vv - val) <= 1e-12:
+                    del lst[idx]
+                    break
+            if not lst and file_id in comp_map:
+                comp_map.pop(file_id, None)
+
         self._refresh_tables()
         self._recompute_and_emit()
 

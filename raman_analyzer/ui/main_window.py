@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QStatusBar,
     QVBoxLayout,
     QWidget,
+    QScrollArea,
 )
 
 from raman_analyzer.analysis.grouping import compute_error_table
@@ -141,42 +142,63 @@ class MainWindow(QMainWindow):
         self.data_table = DataTableWidget(left_widget)
         left_layout.addWidget(self.file_list)
         left_layout.addWidget(self.data_table)
+        left_layout.setStretch(0, 1)
+        left_layout.setStretch(1, 2)
 
-        # Right pane: controls and plot
+        # Right pane: controls (scrollable) + plot
         right_widget = QWidget(splitter)
         right_layout = QVBoxLayout(right_widget)
 
-        self.selection_panel = SelectionPanel(right_widget)
-        self.calc_builder = CalcBuilderWidget(right_widget)
-        self.plot_config = PlotConfigWidget(right_widget)
-        self.trendline_form = TrendlineForm(right_widget)
+        # Controls container inside a scroll area
+        controls_container = QWidget(right_widget)
+        controls_layout = QVBoxLayout(controls_container)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+
+        self.selection_panel = SelectionPanel(controls_container)
+        self.calc_builder = CalcBuilderWidget(controls_container)
+        self.plot_config = PlotConfigWidget(controls_container)
+        self.trendline_form = TrendlineForm(controls_container)
+
+        controls_layout.addWidget(self.selection_panel)
+        controls_layout.addWidget(self.calc_builder)
+        controls_layout.addWidget(self.plot_config)
+        controls_layout.addWidget(self.trendline_form)
+        controls_layout.addStretch(1)
+
+        controls_scroll = QScrollArea(right_widget)
+        controls_scroll.setWidget(controls_container)
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        controls_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        controls_scroll.setFrameShape(QScrollArea.NoFrame)
+
+        # Plot area keeps canvas visible
         self.canvas = PlotCanvas()
+        self.canvas.setMinimumHeight(280)
         self.toolbar_canvas = NavigationToolbar2QT(self.canvas, right_widget)
+        plot_box = QWidget(right_widget)
+        plot_layout = QVBoxLayout(plot_box)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self.toolbar_canvas)
+        plot_layout.addWidget(self.canvas)
 
-        self.selection_panel.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Expanding
-        )
+        right_splitter = QSplitter(Qt.Vertical, right_widget)
+        right_splitter.addWidget(controls_scroll)
+        right_splitter.addWidget(plot_box)
+        right_splitter.setStretchFactor(0, 0)
+        right_splitter.setStretchFactor(1, 1)
+        # Give the plot a decent starting height (users can still drag to resize)
+        right_splitter.setSizes([600, 480])
 
-        # Put Selection Panel first, make it clearly visible
-        right_layout.addWidget(self.selection_panel)  # A/B picks live here
-        right_layout.addWidget(self.calc_builder)  # legacy Metric Builder
-        right_layout.addWidget(self.plot_config)  # plot setup
-        right_layout.addWidget(self.trendline_form)  # trendline tools
-        right_layout.addWidget(self.toolbar_canvas)
-        right_layout.addWidget(self.canvas)
-
-        right_layout.setStretch(0, 2)
-        right_layout.setStretch(1, 1)
-        right_layout.setStretch(2, 1)
-        right_layout.setStretch(3, 1)
-        right_layout.setStretch(4, 0)
-        right_layout.setStretch(5, 3)
+        right_layout.addWidget(right_splitter)
 
         splitter.addWidget(left_widget)
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([360, 960])  # give the right pane enough initial real estate
+        splitter.setSizes([360, 1040])
 
         central_layout.addWidget(splitter)
 
