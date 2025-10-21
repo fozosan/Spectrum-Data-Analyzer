@@ -128,12 +128,14 @@ class MainWindow(QMainWindow):
         central_layout = QVBoxLayout(central)
 
         splitter = QSplitter(Qt.Horizontal, central)
+        splitter.setChildrenCollapsible(False)
 
-        # Left pane: file list + data table
+        # Left pane: file list + data table (resizable between themselves)
         left_widget = QWidget(splitter)
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_splitter = QSplitter(Qt.Vertical, left_widget)
+        left_splitter.setChildrenCollapsible(False)
         self.file_list = FileListWidget(left_splitter)
         self.data_table = DataTableWidget(left_splitter)
         left_splitter.addWidget(self.file_list)
@@ -141,6 +143,7 @@ class MainWindow(QMainWindow):
         left_splitter.setStretchFactor(0, 1)
         left_splitter.setStretchFactor(1, 2)
         left_splitter.setSizes([240, 520])
+        self._left_splitter = left_splitter
         left_layout.addWidget(left_splitter)
 
         # Right pane: controls (scrollable) + plot
@@ -169,8 +172,9 @@ class MainWindow(QMainWindow):
         controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         controls_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         controls_scroll.setFrameShape(QScrollArea.NoFrame)
-        controls_container.setMinimumWidth(980)
-        right_widget.setMinimumWidth(980)
+        # Remove aggressive minimums so the pane starts compact; user can widen later
+        controls_container.setMinimumWidth(0)
+        right_widget.setMinimumWidth(0)
 
         # Plot area keeps canvas visible
         self.canvas = PlotCanvas()
@@ -183,12 +187,14 @@ class MainWindow(QMainWindow):
         plot_layout.addWidget(self.canvas)
 
         right_splitter = QSplitter(Qt.Vertical, right_widget)
+        right_splitter.setChildrenCollapsible(False)
         right_splitter.addWidget(controls_scroll)
         right_splitter.addWidget(plot_box)
         right_splitter.setStretchFactor(0, 0)
         right_splitter.setStretchFactor(1, 1)
-        # Give the plot generous height by default (users can drag to resize)
-        right_splitter.setSizes([520, 620])
+        # Start with generous plot height, compact controls
+        right_splitter.setSizes([480, 520])
+        self._right_splitter = right_splitter
 
         right_layout.addWidget(right_splitter)
 
@@ -196,7 +202,9 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([360, 1060])
+        # Make the right controls pane start at a smaller width by default
+        splitter.setSizes([520, 880])
+        self._main_splitter = splitter
 
         central_layout.addWidget(splitter)
 
@@ -469,6 +477,15 @@ class MainWindow(QMainWindow):
                 action.setChecked(True)
                 action.blockSignals(False)
             widget.setVisible(True)
+
+        if hasattr(self, "_left_splitter"):
+            self._left_splitter.setSizes([240, 520])
+        if hasattr(self, "_right_splitter"):
+            self._right_splitter.setSizes([480, 520])
+        if hasattr(self, "_main_splitter"):
+            self._main_splitter.setSizes([520, 880])
+        if hasattr(self.selection_panel, "reset_splitters"):
+            self.selection_panel.reset_splitters()
 
         if show_message and self.statusBar():
             self.statusBar().showMessage("Layout reset", 2000)
