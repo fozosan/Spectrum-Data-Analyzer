@@ -22,7 +22,7 @@ import pandas as pd
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
-    QGridLayout,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -74,8 +74,11 @@ class SelectionPanel(QWidget):
         self.agg_combo.setMinimumWidth(140)
 
         # Target radios (rebuilt on mode change) — put radios inside a dedicated box
-        self.targets_box = QGroupBox("Armed target", self)
-        self.targets_layout = QHBoxLayout(self.targets_box)
+        self.targets_box = QGroupBox(
+            "Armed target — double-click a value in the left grid to add", self
+        )
+        # Radios added dynamically (stacked vertically)
+        self.targets_layout = QVBoxLayout(self.targets_box)
         self.targets_layout.setContentsMargins(8, 4, 8, 4)
         self.targets_layout.setSpacing(12)
         self._target_radios: List[QRadioButton] = []
@@ -128,7 +131,7 @@ class SelectionPanel(QWidget):
             horizontal = table.horizontalHeader()
             row_height = vertical.defaultSectionSize()
             header_height = horizontal.height()
-            table.setMinimumHeight(header_height + row_height * rows + 12)
+            table.setMinimumHeight(header_height + row_height * rows + 8)
             horizontal.setSectionResizeMode(QHeaderView.Interactive)
             horizontal.setStretchLastSection(True)
 
@@ -143,82 +146,72 @@ class SelectionPanel(QWidget):
         self.clearB_btn = QPushButton("Clear B", self)
 
         # ---------- Manual Selection (top) ----------
-        manual_box = QGroupBox("Manual Selection (Single / Ratio / Difference)", self)
-        manual_grid = QGridLayout(manual_box)
-        manual_grid.setContentsMargins(8, 8, 8, 8)
-        manual_grid.setHorizontalSpacing(12)
-        manual_grid.setVerticalSpacing(6)
+        manual_box = QGroupBox("Manual Selection", self)
+        manual_layout = QVBoxLayout(manual_box)
 
-        # Row 0: Mode + Aggregator
-        manual_grid.addWidget(QLabel("Mode"), 0, 0)
-        manual_grid.addWidget(self.mode_combo, 0, 1)
-        manual_grid.addWidget(QLabel("Aggregator"), 0, 2)
-        manual_grid.addWidget(self.agg_combo, 0, 3)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        form.addRow("Mode", self.mode_combo)
+        form.addRow("Aggregator", self.agg_combo)
+        manual_layout.addLayout(form)
 
-        # Row 1: helper label
-        manual_grid.addWidget(self.armed_label, 1, 0, 1, 4)
+        manual_layout.addWidget(self.targets_box)
+        manual_layout.addWidget(self.armed_label)
 
-        # Row 2: radios box
-        manual_grid.addWidget(self.targets_box, 2, 0, 1, 4)
+        auto_box = QGroupBox("Auto-populate", manual_box)
+        auto_form = QFormLayout(auto_box)
+        auto_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        auto_form.addRow("Row", self.row_spin)
+        auto_form.addRow("Col", self.col_spin)
+        auto_form.addRow("Across", self.scope_combo)
+        auto_form.addRow(self.autofill_btn)
+        manual_layout.addWidget(auto_box)
 
-        # Row 3: autopopulate row
-        autopop_row = QHBoxLayout()
-        autopop_row.addWidget(QLabel("Row:"))
-        autopop_row.addWidget(self.row_spin)
-        autopop_row.addWidget(QLabel("Col:"))
-        autopop_row.addWidget(self.col_spin)
-        autopop_row.addWidget(QLabel("Across:"))
-        autopop_row.addWidget(self.scope_combo)
-        autopop_row.addWidget(self.autofill_btn)
-        autopop_row.addStretch(1)
-        autopop_widget = QWidget(self)
-        autopop_widget.setLayout(autopop_row)
-        manual_grid.addWidget(autopop_widget, 3, 0, 1, 4)
-        manual_grid.setColumnStretch(1, 1)
-        manual_grid.setColumnStretch(3, 1)
-
-        # --- Lists area ---
-        # Column A
+        # --- Lists area (everything aligned vertically) ---
         a_buttons_row = QHBoxLayout()
         a_buttons_row.addWidget(self.removeA_btn)
         a_buttons_row.addWidget(self.clearA_btn)
         a_buttons_widget = QWidget(self)
         a_buttons_widget.setLayout(a_buttons_row)
 
-        column_a = QWidget(self)
-        column_a_layout = QVBoxLayout(column_a)
-        column_a_layout.addWidget(QLabel("Selection A"))
-        column_a_layout.addWidget(self.tableA)
-        column_a_layout.addWidget(a_buttons_widget)
-        column_a_layout.addWidget(QLabel("Computed A (per file)"))
-        column_a_layout.addWidget(self.previewA)
-        column_a_layout.setStretch(1, 1)
-        column_a_layout.setStretch(3, 0)
-        column_a_layout.setStretch(4, 1)
+        a_picks_box = QGroupBox("Selection A — Picks", self)
+        a_picks_v = QVBoxLayout(a_picks_box)
+        a_picks_v.addWidget(self.tableA)
+        a_picks_v.addWidget(a_buttons_widget)
 
-        # Column B
+        a_comp_box = QGroupBox("Computed A (per file)", self)
+        a_comp_v = QVBoxLayout(a_comp_box)
+        a_comp_v.addWidget(self.previewA)
+
         b_buttons_row = QHBoxLayout()
         b_buttons_row.addWidget(self.removeB_btn)
         b_buttons_row.addWidget(self.clearB_btn)
         b_buttons_widget = QWidget(self)
         b_buttons_widget.setLayout(b_buttons_row)
 
-        column_b = QWidget(self)
-        column_b_layout = QVBoxLayout(column_b)
-        column_b_layout.addWidget(QLabel("Selection B"))
-        column_b_layout.addWidget(self.tableB)
-        column_b_layout.addWidget(b_buttons_widget)
-        column_b_layout.addWidget(QLabel("Computed B (per file)"))
-        column_b_layout.addWidget(self.previewB)
-        column_b_layout.setStretch(1, 1)
-        column_b_layout.setStretch(3, 0)
-        column_b_layout.setStretch(4, 1)
+        b_picks_box = QGroupBox("Selection B — Picks", self)
+        b_picks_v = QVBoxLayout(b_picks_box)
+        b_picks_v.addWidget(self.tableB)
+        b_picks_v.addWidget(b_buttons_widget)
 
-        lists_splitter = QSplitter(Qt.Horizontal, self)
-        lists_splitter.addWidget(column_a)
-        lists_splitter.addWidget(column_b)
-        lists_splitter.setStretchFactor(0, 1)
-        lists_splitter.setStretchFactor(1, 1)
+        b_comp_box = QGroupBox("Computed B (per file)", self)
+        b_comp_v = QVBoxLayout(b_comp_box)
+        b_comp_v.addWidget(self.previewB)
+
+        lists_splitter = QSplitter(Qt.Vertical, self)
+        lists_splitter.setChildrenCollapsible(False)
+        lists_splitter.addWidget(a_picks_box)
+        lists_splitter.addWidget(a_comp_box)
+        lists_splitter.addWidget(b_picks_box)
+        lists_splitter.addWidget(b_comp_box)
+        lists_splitter.setStretchFactor(0, 3)
+        lists_splitter.setStretchFactor(1, 2)
+        lists_splitter.setStretchFactor(2, 3)
+        lists_splitter.setStretchFactor(3, 2)
+        lists_splitter.setHandleWidth(6)
+        lists_splitter.setSizes([280, 180, 280, 180])
+        self._lists_splitter = lists_splitter
+        self._default_lists_sizes = [280, 180, 280, 180]
 
         # Root: manual controls on top, lists at bottom (resizable vertically)
         root_splitter = QSplitter(Qt.Vertical, self)
@@ -226,8 +219,10 @@ class SelectionPanel(QWidget):
         root_splitter.addWidget(lists_splitter)
         root_splitter.setStretchFactor(0, 0)
         root_splitter.setStretchFactor(1, 1)
-        root_splitter.setSizes([220, 520])
-        lists_splitter.setSizes([1, 1])
+        root_splitter.setHandleWidth(6)
+        root_splitter.setSizes([260, 520])
+        self._root_splitter = root_splitter
+        self._default_root_sizes = [260, 520]
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -249,6 +244,14 @@ class SelectionPanel(QWidget):
     # ----------------------------- Public API -----------------------------
     def set_context(self, file_to_tag: Dict[str, str]) -> None:
         self._file_to_tag = dict(file_to_tag or {})
+
+    def reset_splitters(self) -> None:
+        """Restore splitter sizes to their initial proportions."""
+
+        if hasattr(self, "_root_splitter") and self._root_splitter is not None:
+            self._root_splitter.setSizes(list(self._default_root_sizes))
+        if hasattr(self, "_lists_splitter") and self._lists_splitter is not None:
+            self._lists_splitter.setSizes(list(self._default_lists_sizes))
 
     def get_state(self) -> dict:
         """Return a JSON-serializable snapshot of the current selections."""
