@@ -21,6 +21,16 @@ from PyQt5.QtWidgets import (
     QScrollArea,
 )
 
+# -------------------- Default layout knobs (easy to tweak) --------------------
+# Width split between left and right panes (main horizontal splitter)
+#   [left_width, right_width]
+DEFAULT_MAIN_SPLIT_SIZES = [520, 880]
+
+# Height split on the right between controls (top) and plot (bottom)
+#   [controls_height, plot_height]
+DEFAULT_RIGHT_SPLIT_SIZES = [640, 360]
+# -----------------------------------------------------------------------------
+
 from raman_analyzer.analysis.grouping import compute_error_table
 from raman_analyzer.analysis.trendlines import (
     eval_linear,
@@ -192,8 +202,8 @@ class MainWindow(QMainWindow):
         right_splitter.addWidget(plot_box)
         right_splitter.setStretchFactor(0, 0)
         right_splitter.setStretchFactor(1, 1)
-        # Start with generous plot height, compact controls
-        right_splitter.setSizes([480, 520])
+        # Start with more controls height by default (still resizable)
+        right_splitter.setSizes(list(DEFAULT_RIGHT_SPLIT_SIZES))
         self._right_splitter = right_splitter
 
         right_layout.addWidget(right_splitter)
@@ -202,8 +212,8 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        # Make the right controls pane start at a smaller width by default
-        splitter.setSizes([520, 880])
+        # Default left/right width split (user can drag to resize)
+        splitter.setSizes(list(DEFAULT_MAIN_SPLIT_SIZES))
         self._main_splitter = splitter
 
         central_layout.addWidget(splitter)
@@ -481,9 +491,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_left_splitter"):
             self._left_splitter.setSizes([240, 520])
         if hasattr(self, "_right_splitter"):
-            self._right_splitter.setSizes([480, 520])
+            self._right_splitter.setSizes(list(DEFAULT_RIGHT_SPLIT_SIZES))
         if hasattr(self, "_main_splitter"):
-            self._main_splitter.setSizes([520, 880])
+            self._main_splitter.setSizes(list(DEFAULT_MAIN_SPLIT_SIZES))
         if hasattr(self.selection_panel, "reset_splitters"):
             self.selection_panel.reset_splitters()
 

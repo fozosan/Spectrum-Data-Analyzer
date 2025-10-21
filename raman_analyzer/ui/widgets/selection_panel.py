@@ -38,6 +38,19 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+# -------------------- Default layout knobs (easy to tweak) --------------------
+# Default vertical split between "Manual Selection" (top) and the lists (bottom)
+#   [manual_height, lists_height]
+DEFAULT_ROOT_SIZES = [320, 680]
+
+# Default vertical split for the 4 list sections:
+#   [A_picks, A_computed, B_picks, B_computed]
+DEFAULT_LISTS_SIZES = [380, 220, 380, 220]
+
+# Minimum "visual rows" used to compute table minimum heights
+DEFAULT_MIN_TABLE_ROWS = 8
+# -----------------------------------------------------------------------------
+
 
 class SelectionPanel(QWidget):
     """UI for building Selection A/B from manual picks and auto-populate."""
@@ -135,10 +148,10 @@ class SelectionPanel(QWidget):
             horizontal.setSectionResizeMode(QHeaderView.Interactive)
             horizontal.setStretchLastSection(True)
 
-        _enforce_min_rows(self.tableA, rows=5)
-        _enforce_min_rows(self.tableB, rows=5)
-        _enforce_min_rows(self.previewA, rows=5)
-        _enforce_min_rows(self.previewB, rows=5)
+        _enforce_min_rows(self.tableA, rows=DEFAULT_MIN_TABLE_ROWS)
+        _enforce_min_rows(self.tableB, rows=DEFAULT_MIN_TABLE_ROWS)
+        _enforce_min_rows(self.previewA, rows=DEFAULT_MIN_TABLE_ROWS)
+        _enforce_min_rows(self.previewB, rows=DEFAULT_MIN_TABLE_ROWS)
 
         self.removeA_btn = QPushButton("Remove Selected (A)", self)
         self.clearA_btn = QPushButton("Clear A", self)
@@ -204,14 +217,14 @@ class SelectionPanel(QWidget):
         lists_splitter.addWidget(a_comp_box)
         lists_splitter.addWidget(b_picks_box)
         lists_splitter.addWidget(b_comp_box)
-        lists_splitter.setStretchFactor(0, 3)
-        lists_splitter.setStretchFactor(1, 2)
-        lists_splitter.setStretchFactor(2, 3)
-        lists_splitter.setStretchFactor(3, 2)
+        lists_splitter.setStretchFactor(0, 3)  # A picks
+        lists_splitter.setStretchFactor(1, 2)  # A computed
+        lists_splitter.setStretchFactor(2, 3)  # B picks
+        lists_splitter.setStretchFactor(3, 2)  # B computed
         lists_splitter.setHandleWidth(6)
-        lists_splitter.setSizes([280, 180, 280, 180])
+        lists_splitter.setSizes(list(DEFAULT_LISTS_SIZES))
         self._lists_splitter = lists_splitter
-        self._default_lists_sizes = [280, 180, 280, 180]
+        self._default_lists_sizes = list(DEFAULT_LISTS_SIZES)
 
         # Root: manual controls on top, lists at bottom (resizable vertically)
         root_splitter = QSplitter(Qt.Vertical, self)
@@ -220,9 +233,9 @@ class SelectionPanel(QWidget):
         root_splitter.setStretchFactor(0, 0)
         root_splitter.setStretchFactor(1, 1)
         root_splitter.setHandleWidth(6)
-        root_splitter.setSizes([260, 520])
+        root_splitter.setSizes(list(DEFAULT_ROOT_SIZES))
         self._root_splitter = root_splitter
-        self._default_root_sizes = [260, 520]
+        self._default_root_sizes = list(DEFAULT_ROOT_SIZES)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
