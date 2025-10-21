@@ -19,7 +19,7 @@ import math
 import statistics
 
 import pandas as pd
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -41,11 +41,11 @@ from PyQt5.QtWidgets import (
 # -------------------- Default layout knobs (easy to tweak) --------------------
 # Default vertical split between "Manual Selection" (top) and the lists (bottom)
 #   [manual_height, lists_height]
-DEFAULT_ROOT_SIZES = [320, 680]
+DEFAULT_ROOT_SIZES = [460, 840]
 
 # Default vertical split for the 4 list sections:
 #   [A_picks, A_computed, B_picks, B_computed]
-DEFAULT_LISTS_SIZES = [380, 220, 380, 220]
+DEFAULT_LISTS_SIZES = [540, 320, 540, 320]
 
 # Minimum "visual rows" used to compute table minimum heights
 DEFAULT_MIN_TABLE_ROWS = 8
@@ -64,7 +64,7 @@ class SelectionPanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         # Claim enough space to stay visible when embedded in layouts.
-        self.setMinimumHeight(240)
+        self.setMinimumHeight(320)
         self.setMinimumWidth(420)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
@@ -87,18 +87,17 @@ class SelectionPanel(QWidget):
         self.agg_combo.setMinimumWidth(140)
 
         # Target radios (rebuilt on mode change) — put radios inside a dedicated box
-        self.targets_box = QGroupBox(
-            "Armed target — double-click a value in the left grid to add", self
-        )
+        self.targets_panel = QWidget(self)
         # Radios added dynamically (stacked vertically)
-        self.targets_layout = QVBoxLayout(self.targets_box)
-        self.targets_layout.setContentsMargins(8, 4, 8, 4)
+        self.targets_layout = QVBoxLayout(self.targets_panel)
+        self.targets_layout.setContentsMargins(0, 0, 0, 0)
         self.targets_layout.setSpacing(12)
         self._target_radios: List[QRadioButton] = []
         self._target_radio_map: Dict[str, QRadioButton] = {}
         self.armed_label = QLabel(
             "Double-click a value in the left grid to add to the armed target.", self
         )
+        self.armed_label.setWordWrap(True)
 
         # Auto-populate controls
         self.row_spin = QSpinBox(self)
@@ -160,25 +159,28 @@ class SelectionPanel(QWidget):
 
         # ---------- Manual Selection (top) ----------
         manual_box = QGroupBox("Manual Selection", self)
+        manual_box.setMinimumHeight(380)
         manual_layout = QVBoxLayout(manual_box)
+        manual_layout.setContentsMargins(8, 8, 8, 8)
+        manual_layout.setSpacing(12)
 
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         form.addRow("Mode", self.mode_combo)
         form.addRow("Aggregator", self.agg_combo)
+        form.addRow("Armed target", self.targets_panel)
+        form.addRow("", self.armed_label)
+
+        auto_header = QLabel("Auto-populate", manual_box)
+        auto_header.setStyleSheet("font-weight: bold;")
+        form.addRow(auto_header)
+        form.addRow("Row", self.row_spin)
+        form.addRow("Col", self.col_spin)
+        form.addRow("Across", self.scope_combo)
+        form.addRow("", self.autofill_btn)
         manual_layout.addLayout(form)
 
-        manual_layout.addWidget(self.targets_box)
-        manual_layout.addWidget(self.armed_label)
-
-        auto_box = QGroupBox("Auto-populate", manual_box)
-        auto_form = QFormLayout(auto_box)
-        auto_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        auto_form.addRow("Row", self.row_spin)
-        auto_form.addRow("Col", self.col_spin)
-        auto_form.addRow("Across", self.scope_combo)
-        auto_form.addRow(self.autofill_btn)
-        manual_layout.addWidget(auto_box)
+        self.targets_panel.setMinimumHeight(160)
 
         # --- Lists area (everything aligned vertically) ---
         a_buttons_row = QHBoxLayout()
@@ -188,11 +190,13 @@ class SelectionPanel(QWidget):
         a_buttons_widget.setLayout(a_buttons_row)
 
         a_picks_box = QGroupBox("Selection A — Picks", self)
+        a_picks_box.setMinimumHeight(220)
         a_picks_v = QVBoxLayout(a_picks_box)
         a_picks_v.addWidget(self.tableA)
         a_picks_v.addWidget(a_buttons_widget)
 
         a_comp_box = QGroupBox("Computed A (per file)", self)
+        a_comp_box.setMinimumHeight(180)
         a_comp_v = QVBoxLayout(a_comp_box)
         a_comp_v.addWidget(self.previewA)
 
@@ -203,11 +207,13 @@ class SelectionPanel(QWidget):
         b_buttons_widget.setLayout(b_buttons_row)
 
         b_picks_box = QGroupBox("Selection B — Picks", self)
+        b_picks_box.setMinimumHeight(220)
         b_picks_v = QVBoxLayout(b_picks_box)
         b_picks_v.addWidget(self.tableB)
         b_picks_v.addWidget(b_buttons_widget)
 
         b_comp_box = QGroupBox("Computed B (per file)", self)
+        b_comp_box.setMinimumHeight(180)
         b_comp_v = QVBoxLayout(b_comp_box)
         b_comp_v.addWidget(self.previewB)
 
@@ -253,6 +259,8 @@ class SelectionPanel(QWidget):
         # Initialize mode
         self._rebuild_target_radios("Single")
         self._update_armed_ui()
+        # Apply splitter sizes once we're laid out so defaults stick
+        QTimer.singleShot(0, self.reset_splitters)
 
     # ----------------------------- Public API -----------------------------
     def set_context(self, file_to_tag: Dict[str, str]) -> None:
@@ -408,7 +416,7 @@ class SelectionPanel(QWidget):
                 widget.deleteLater()
 
         def _add_radio(label: str, key: str, checked: bool = False) -> None:
-            rb = QRadioButton(label, self.targets_box)
+            rb = QRadioButton(label, self.targets_panel)
             rb.setChecked(checked)
             rb.toggled.connect(lambda state, k=key: self._on_arm(k, state))
             self._target_radios.append(rb)
