@@ -41,11 +41,11 @@ from PyQt5.QtWidgets import (
 # -------------------- Default layout knobs (easy to tweak) --------------------
 # Default vertical split between "Manual Selection" (top) and the lists (bottom)
 #   [manual_height, lists_height]
-DEFAULT_ROOT_SIZES = [460, 840]
+DEFAULT_ROOT_SIZES = [360, 960]
 
 # Default vertical split for the 4 list sections:
 #   [A_picks, A_computed, B_picks, B_computed]
-DEFAULT_LISTS_SIZES = [540, 320, 540, 320]
+DEFAULT_LISTS_SIZES = [420, 220, 420, 220]
 
 # Minimum "visual rows" used to compute table minimum heights
 DEFAULT_MIN_TABLE_ROWS = 8
@@ -143,7 +143,7 @@ class SelectionPanel(QWidget):
             horizontal = table.horizontalHeader()
             row_height = vertical.defaultSectionSize()
             header_height = horizontal.height()
-            table.setMinimumHeight(header_height + row_height * rows + 8)
+            table.setMinimumHeight(header_height + row_height * rows + 12)
             horizontal.setSectionResizeMode(QHeaderView.Interactive)
             horizontal.setStretchLastSection(True)
 
@@ -159,7 +159,7 @@ class SelectionPanel(QWidget):
 
         # ---------- Manual Selection (top) ----------
         manual_box = QGroupBox("Manual Selection", self)
-        manual_box.setMinimumHeight(380)
+        manual_box.setMinimumHeight(320)
         manual_layout = QVBoxLayout(manual_box)
         manual_layout.setContentsMargins(8, 8, 8, 8)
         manual_layout.setSpacing(12)
@@ -190,14 +190,22 @@ class SelectionPanel(QWidget):
         a_buttons_widget.setLayout(a_buttons_row)
 
         a_picks_box = QGroupBox("Selection A — Picks", self)
-        a_picks_box.setMinimumHeight(220)
+        a_picks_box.setMinimumHeight(240)
+        a_picks_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        a_picks_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         a_picks_v = QVBoxLayout(a_picks_box)
+        a_picks_v.setContentsMargins(8, 8, 8, 8)
+        a_picks_v.setSpacing(6)
         a_picks_v.addWidget(self.tableA)
         a_picks_v.addWidget(a_buttons_widget)
 
         a_comp_box = QGroupBox("Computed A (per file)", self)
-        a_comp_box.setMinimumHeight(180)
+        a_comp_box.setMinimumHeight(170)
+        a_comp_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        a_comp_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         a_comp_v = QVBoxLayout(a_comp_box)
+        a_comp_v.setContentsMargins(8, 8, 8, 8)
+        a_comp_v.setSpacing(6)
         a_comp_v.addWidget(self.previewA)
 
         b_buttons_row = QHBoxLayout()
@@ -207,14 +215,22 @@ class SelectionPanel(QWidget):
         b_buttons_widget.setLayout(b_buttons_row)
 
         b_picks_box = QGroupBox("Selection B — Picks", self)
-        b_picks_box.setMinimumHeight(220)
+        b_picks_box.setMinimumHeight(240)
+        b_picks_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        b_picks_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         b_picks_v = QVBoxLayout(b_picks_box)
+        b_picks_v.setContentsMargins(8, 8, 8, 8)
+        b_picks_v.setSpacing(6)
         b_picks_v.addWidget(self.tableB)
         b_picks_v.addWidget(b_buttons_widget)
 
         b_comp_box = QGroupBox("Computed B (per file)", self)
-        b_comp_box.setMinimumHeight(180)
+        b_comp_box.setMinimumHeight(170)
+        b_comp_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        b_comp_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         b_comp_v = QVBoxLayout(b_comp_box)
+        b_comp_v.setContentsMargins(8, 8, 8, 8)
+        b_comp_v.setSpacing(6)
         b_comp_v.addWidget(self.previewB)
 
         lists_splitter = QSplitter(Qt.Vertical, self)
@@ -223,10 +239,10 @@ class SelectionPanel(QWidget):
         lists_splitter.addWidget(a_comp_box)
         lists_splitter.addWidget(b_picks_box)
         lists_splitter.addWidget(b_comp_box)
-        lists_splitter.setStretchFactor(0, 3)  # A picks
-        lists_splitter.setStretchFactor(1, 2)  # A computed
-        lists_splitter.setStretchFactor(2, 3)  # B picks
-        lists_splitter.setStretchFactor(3, 2)  # B computed
+        lists_splitter.setStretchFactor(0, 4)  # A picks
+        lists_splitter.setStretchFactor(1, 3)  # A computed
+        lists_splitter.setStretchFactor(2, 4)  # B picks
+        lists_splitter.setStretchFactor(3, 3)  # B computed
         lists_splitter.setHandleWidth(6)
         lists_splitter.setSizes(list(DEFAULT_LISTS_SIZES))
         self._lists_splitter = lists_splitter
