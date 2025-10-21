@@ -6,7 +6,7 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
-from PyQt5.QtCore import Qt, QThread, pyqtSlot
+from PyQt5.QtCore import Qt, QThread, pyqtSlot, QTimer
 from PyQt5.QtWidgets import (
     QAction,
     QFileDialog,
@@ -20,16 +20,6 @@ from PyQt5.QtWidgets import (
     QWidget,
     QScrollArea,
 )
-
-# -------------------- Default layout knobs (easy to tweak) --------------------
-# Width split between left and right panes (main horizontal splitter)
-#   [left_width, right_width]
-DEFAULT_MAIN_SPLIT_SIZES = [520, 880]
-
-# Height split on the right between controls (top) and plot (bottom)
-#   [controls_height, plot_height]
-DEFAULT_RIGHT_SPLIT_SIZES = [640, 360]
-# -----------------------------------------------------------------------------
 
 from raman_analyzer.analysis.grouping import compute_error_table
 from raman_analyzer.analysis.trendlines import (
@@ -80,6 +70,24 @@ class MainWindow(QMainWindow):
         self._loader_worker: Optional[CsvLoaderWorker] = None
         self._load_failed: bool = False
         self._current_grid_file: Optional[str] = None
+        # Splitter references (filled during setup)
+        self._main_splitter: Optional[QSplitter] = None
+        self._left_splitter: Optional[QSplitter] = None
+        self._right_splitter: Optional[QSplitter] = None
+
+        # -------------------- Default layout knobs --------------------
+        # Width split between left and right panes (main horizontal splitter)
+        #   [left_width, right_width]
+        self.DEFAULT_MAIN_SPLIT_SIZES = [520, 880]
+
+        # Height split for the left stack (file list over data table)
+        #   [file_list_height, data_table_height]
+        self.DEFAULT_LEFT_SPLIT_SIZES = [240, 520]
+
+        # Height split on the right between controls (top) and plot (bottom)
+        #   [controls_height, plot_height]
+        self.DEFAULT_RIGHT_SPLIT_SIZES = [640, 360]
+        # --------------------------------------------------------------
 
     # ------------------------------------------------------------------ UI setup
     def _create_actions(self) -> None:
@@ -152,7 +160,6 @@ class MainWindow(QMainWindow):
         left_splitter.addWidget(self.data_table)
         left_splitter.setStretchFactor(0, 1)
         left_splitter.setStretchFactor(1, 2)
-        left_splitter.setSizes([240, 520])
         self._left_splitter = left_splitter
         left_layout.addWidget(left_splitter)
 
@@ -160,7 +167,7 @@ class MainWindow(QMainWindow):
         right_widget = QWidget(splitter)
         right_layout = QVBoxLayout(right_widget)
 
-        # Controls container inside a scroll area
+        # Controls container inside a scroll area (fully vertical)
         controls_container = QWidget(right_widget)
         controls_layout = QVBoxLayout(controls_container)
         controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -202,8 +209,6 @@ class MainWindow(QMainWindow):
         right_splitter.addWidget(plot_box)
         right_splitter.setStretchFactor(0, 0)
         right_splitter.setStretchFactor(1, 1)
-        # Start with more controls height by default (still resizable)
-        right_splitter.setSizes(list(DEFAULT_RIGHT_SPLIT_SIZES))
         self._right_splitter = right_splitter
 
         right_layout.addWidget(right_splitter)
@@ -212,15 +217,31 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        # Default left/right width split (user can drag to resize)
-        splitter.setSizes(list(DEFAULT_MAIN_SPLIT_SIZES))
         self._main_splitter = splitter
 
         central_layout.addWidget(splitter)
 
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar(self))
+        # Apply initial splitter sizes after everything is on screen so Qt obeys them.
+        QTimer.singleShot(0, self._apply_initial_sizes)
         self._reset_layout(show_message=False)
+
+    def _apply_initial_sizes(self) -> None:
+        """Push default splitter sizes into place once the widgets exist."""
+
+        try:
+            if self._left_splitter is not None:
+                self._left_splitter.setSizes(list(self.DEFAULT_LEFT_SPLIT_SIZES))
+            if self._right_splitter is not None:
+                self._right_splitter.setSizes(list(self.DEFAULT_RIGHT_SPLIT_SIZES))
+            if self._main_splitter is not None:
+                self._main_splitter.setSizes(list(self.DEFAULT_MAIN_SPLIT_SIZES))
+            if hasattr(self.selection_panel, "reset_splitters"):
+                self.selection_panel.reset_splitters()
+        except Exception:
+            # Defensive: avoid crashing the UI if a widget has already been deleted.
+            pass
 
     def _connect_signals(self) -> None:
         self.file_list.tagChanged.connect(self._on_tag_changed)
@@ -488,14 +509,7 @@ class MainWindow(QMainWindow):
                 action.blockSignals(False)
             widget.setVisible(True)
 
-        if hasattr(self, "_left_splitter"):
-            self._left_splitter.setSizes([240, 520])
-        if hasattr(self, "_right_splitter"):
-            self._right_splitter.setSizes(list(DEFAULT_RIGHT_SPLIT_SIZES))
-        if hasattr(self, "_main_splitter"):
-            self._main_splitter.setSizes(list(DEFAULT_MAIN_SPLIT_SIZES))
-        if hasattr(self.selection_panel, "reset_splitters"):
-            self.selection_panel.reset_splitters()
+        self._apply_initial_sizes()
 
         if show_message and self.statusBar():
             self.statusBar().showMessage("Layout reset", 2000)
