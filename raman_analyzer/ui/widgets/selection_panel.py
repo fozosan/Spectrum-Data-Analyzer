@@ -39,13 +39,17 @@ from PyQt5.QtWidgets import (
 )
 
 # -------------------- Default layout knobs (easy to tweak) --------------------
-# Default vertical split between "Manual Selection" (top) and the lists (bottom)
+# Default vertical split between "Manual Selection" (top) and lists (bottom)
 #   [manual_height, lists_height]
-DEFAULT_ROOT_SIZES = [360, 960]
+DEFAULT_ROOT_SIZES = [320, 1120]
 
-# Default vertical split for the 4 list sections:
-#   [A_picks, A_computed, B_picks, B_computed]
-DEFAULT_LISTS_SIZES = [420, 220, 420, 220]
+# Default vertical split for each bucket (picks + computed)
+#   [picks_height, computed_height]
+DEFAULT_BUCKET_SIZES = [360, 220]
+
+# Default vertical split between Selection A stack and Selection B stack
+#   [A_height, B_height]
+DEFAULT_AB_SIZES = [560, 560]
 
 # Minimum "visual rows" used to compute table minimum heights
 DEFAULT_MIN_TABLE_ROWS = 8
@@ -63,10 +67,10 @@ class SelectionPanel(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        # Claim enough space to stay visible when embedded in layouts.
-        self.setMinimumHeight(320)
-        self.setMinimumWidth(420)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # Claim space and grow when embedded inside nested splitters.
+        self.setMinimumHeight(260)
+        self.setMinimumWidth(460)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self._mode = "Single"  # 'Single' | 'Ratio' | 'Difference'
         self._armed: str = "A.single"  # one of target keys
@@ -143,7 +147,7 @@ class SelectionPanel(QWidget):
             horizontal = table.horizontalHeader()
             row_height = vertical.defaultSectionSize()
             header_height = horizontal.height()
-            table.setMinimumHeight(header_height + row_height * rows + 12)
+            table.setMinimumHeight(header_height + row_height * rows + 16)
             horizontal.setSectionResizeMode(QHeaderView.Interactive)
             horizontal.setStretchLastSection(True)
 
@@ -190,7 +194,7 @@ class SelectionPanel(QWidget):
         a_buttons_widget.setLayout(a_buttons_row)
 
         a_picks_box = QGroupBox("Selection A — Picks", self)
-        a_picks_box.setMinimumHeight(240)
+        a_picks_box.setMinimumHeight(260)
         a_picks_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         a_picks_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         a_picks_v = QVBoxLayout(a_picks_box)
@@ -200,7 +204,7 @@ class SelectionPanel(QWidget):
         a_picks_v.addWidget(a_buttons_widget)
 
         a_comp_box = QGroupBox("Computed A (per file)", self)
-        a_comp_box.setMinimumHeight(170)
+        a_comp_box.setMinimumHeight(200)
         a_comp_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         a_comp_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         a_comp_v = QVBoxLayout(a_comp_box)
@@ -215,7 +219,7 @@ class SelectionPanel(QWidget):
         b_buttons_widget.setLayout(b_buttons_row)
 
         b_picks_box = QGroupBox("Selection B — Picks", self)
-        b_picks_box.setMinimumHeight(240)
+        b_picks_box.setMinimumHeight(260)
         b_picks_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         b_picks_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         b_picks_v = QVBoxLayout(b_picks_box)
@@ -225,7 +229,7 @@ class SelectionPanel(QWidget):
         b_picks_v.addWidget(b_buttons_widget)
 
         b_comp_box = QGroupBox("Computed B (per file)", self)
-        b_comp_box.setMinimumHeight(170)
+        b_comp_box.setMinimumHeight(200)
         b_comp_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         b_comp_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         b_comp_v = QVBoxLayout(b_comp_box)
@@ -233,28 +237,48 @@ class SelectionPanel(QWidget):
         b_comp_v.setSpacing(6)
         b_comp_v.addWidget(self.previewB)
 
-        lists_splitter = QSplitter(Qt.Vertical, self)
-        lists_splitter.setChildrenCollapsible(False)
-        lists_splitter.addWidget(a_picks_box)
-        lists_splitter.addWidget(a_comp_box)
-        lists_splitter.addWidget(b_picks_box)
-        lists_splitter.addWidget(b_comp_box)
-        lists_splitter.setStretchFactor(0, 4)  # A picks
-        lists_splitter.setStretchFactor(1, 3)  # A computed
-        lists_splitter.setStretchFactor(2, 4)  # B picks
-        lists_splitter.setStretchFactor(3, 3)  # B computed
-        lists_splitter.setHandleWidth(6)
-        lists_splitter.setSizes(list(DEFAULT_LISTS_SIZES))
-        self._lists_splitter = lists_splitter
-        self._default_lists_sizes = list(DEFAULT_LISTS_SIZES)
+        # --- Nested splitter layout ---
+        a_splitter = QSplitter(Qt.Vertical, self)
+        a_splitter.setChildrenCollapsible(False)
+        a_splitter.setHandleWidth(6)
+        a_splitter.addWidget(a_picks_box)
+        a_splitter.addWidget(a_comp_box)
+        a_splitter.setStretchFactor(0, 3)
+        a_splitter.setStretchFactor(1, 2)
+        a_splitter.setSizes(list(DEFAULT_BUCKET_SIZES))
+        self._a_splitter = a_splitter
+        self._default_a_sizes = list(DEFAULT_BUCKET_SIZES)
+
+        b_splitter = QSplitter(Qt.Vertical, self)
+        b_splitter.setChildrenCollapsible(False)
+        b_splitter.setHandleWidth(6)
+        b_splitter.addWidget(b_picks_box)
+        b_splitter.addWidget(b_comp_box)
+        b_splitter.setStretchFactor(0, 3)
+        b_splitter.setStretchFactor(1, 2)
+        b_splitter.setSizes(list(DEFAULT_BUCKET_SIZES))
+        self._b_splitter = b_splitter
+        self._default_b_sizes = list(DEFAULT_BUCKET_SIZES)
+
+        ab_splitter = QSplitter(Qt.Vertical, self)
+        ab_splitter.setChildrenCollapsible(False)
+        ab_splitter.setHandleWidth(6)
+        ab_splitter.addWidget(a_splitter)
+        ab_splitter.addWidget(b_splitter)
+        ab_splitter.setStretchFactor(0, 1)
+        ab_splitter.setStretchFactor(1, 1)
+        ab_splitter.setSizes(list(DEFAULT_AB_SIZES))
+        self._ab_splitter = ab_splitter
+        self._default_ab_sizes = list(DEFAULT_AB_SIZES)
 
         # Root: manual controls on top, lists at bottom (resizable vertically)
         root_splitter = QSplitter(Qt.Vertical, self)
+        root_splitter.setChildrenCollapsible(False)
+        root_splitter.setHandleWidth(6)
         root_splitter.addWidget(manual_box)
-        root_splitter.addWidget(lists_splitter)
+        root_splitter.addWidget(ab_splitter)
         root_splitter.setStretchFactor(0, 0)
         root_splitter.setStretchFactor(1, 1)
-        root_splitter.setHandleWidth(6)
         root_splitter.setSizes(list(DEFAULT_ROOT_SIZES))
         self._root_splitter = root_splitter
         self._default_root_sizes = list(DEFAULT_ROOT_SIZES)
@@ -287,8 +311,12 @@ class SelectionPanel(QWidget):
 
         if hasattr(self, "_root_splitter") and self._root_splitter is not None:
             self._root_splitter.setSizes(list(self._default_root_sizes))
-        if hasattr(self, "_lists_splitter") and self._lists_splitter is not None:
-            self._lists_splitter.setSizes(list(self._default_lists_sizes))
+        if hasattr(self, "_ab_splitter") and self._ab_splitter is not None:
+            self._ab_splitter.setSizes(list(self._default_ab_sizes))
+        if hasattr(self, "_a_splitter") and self._a_splitter is not None:
+            self._a_splitter.setSizes(list(self._default_a_sizes))
+        if hasattr(self, "_b_splitter") and self._b_splitter is not None:
+            self._b_splitter.setSizes(list(self._default_b_sizes))
 
     def get_state(self) -> dict:
         """Return a JSON-serializable snapshot of the current selections."""
