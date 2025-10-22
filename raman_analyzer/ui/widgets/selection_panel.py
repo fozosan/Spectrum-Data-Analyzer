@@ -325,7 +325,6 @@ class SelectionPanel(QWidget):
             self.mode_combo.blockSignals(False)
         self._mode = requested_mode
         self._rebuild_target_radios(requested_mode)
-        self._picks = self._blank_picks()
 
         aggregator = state.get("aggregator")
         self.agg_combo.blockSignals(True)
@@ -409,13 +408,35 @@ class SelectionPanel(QWidget):
     def _on_mode_changed(self, new_mode: str) -> None:
         self._mode = new_mode
         self._rebuild_target_radios(new_mode)
-        # Clear all picks when mode changes (keeps semantics unambiguous).
-        self._picks = self._blank_picks()
         self._refresh_tables()
         self._recompute_and_emit()
 
+    def _blank_picks(self) -> Dict[str, Dict[str, Dict[str, List[Tuple[int, int, float]]]]]:
+        components = ("single", "num", "den", "left", "right")
+        return {
+            bucket: {comp: {} for comp in components}
+            for bucket in ("A", "B")
+        }
+
+    def _target_keys_for_mode(self, mode: str) -> List[Tuple[str, str, str]]:
+        mode = (mode or "Single").strip()
+        if mode == "Ratio":
+            return [
+                ("A", "num", "A (numerator)"),
+                ("A", "den", "A (denominator)"),
+                ("B", "num", "B (numerator)"),
+                ("B", "den", "B (denominator)"),
+            ]
+        if mode == "Difference":
+            return [
+                ("A", "left", "A (left)"),
+                ("A", "right", "A (right)"),
+                ("B", "left", "B (left)"),
+                ("B", "right", "B (right)"),
+            ]
+        return [("A", "single", "A (single)"), ("B", "single", "B (single)")]
+
     def _rebuild_target_radios(self, mode: str) -> None:
-        # Clear layout
         for rb in self._target_radios:
             rb.deleteLater()
         self._target_radios = []
@@ -426,34 +447,24 @@ class SelectionPanel(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
-        def _add_radio(label: str, key: str, checked: bool = False) -> None:
+        keys = self._target_keys_for_mode(mode)
+        valid_keys = [f"{bucket}.{component}" for bucket, component, _ in keys]
+        desired = self._armed if self._armed in valid_keys else valid_keys[0]
+
+        for bucket, component, label in keys:
+            key = f"{bucket}.{component}"
             rb = QRadioButton(label, self.targets_panel)
-            rb.setChecked(checked)
-            rb.toggled.connect(lambda state, k=key: self._on_arm(k, state))
-            self._target_radios.append(rb)
+            rb.setChecked(key == desired)
+            rb.toggled.connect(lambda checked, k=key: self._set_armed(k, checked))
             self.targets_layout.addWidget(rb)
+            self._target_radios.append(rb)
             self._target_radio_map[key] = rb
 
-        if mode == "Single":
-            _add_radio("A (single)", "A.single", True)
-            _add_radio("B (single)", "B.single", False)
-            self._armed = "A.single"
-        elif mode == "Ratio":
-            _add_radio("A: Numerator", "A.num", True)
-            _add_radio("A: Denominator", "A.den", False)
-            _add_radio("B: Numerator", "B.num", False)
-            _add_radio("B: Denominator", "B.den", False)
-            self._armed = "A.num"
-        else:  # Difference
-            _add_radio("A: Left", "A.left", True)
-            _add_radio("A: Right", "A.right", False)
-            _add_radio("B: Left", "B.left", False)
-            _add_radio("B: Right", "B.right", False)
-            self._armed = "A.left"
         self.targets_layout.addStretch(1)
+        self._armed = desired
         self._update_armed_ui()
 
-    def _on_arm(self, key: str, checked: bool) -> None:
+    def _set_armed(self, key: str, checked: bool) -> None:
         if checked:
             self._armed = key
             self._update_armed_ui()
@@ -463,7 +474,8 @@ class SelectionPanel(QWidget):
         radio = self._target_radio_map.get(key)
         if radio is not None and not radio.isChecked():
             radio.setChecked(True)
-        self._update_armed_ui()
+        else:
+            self._update_armed_ui()
 
     def _on_autofill(self) -> None:
         target = self._armed
@@ -474,31 +486,25 @@ class SelectionPanel(QWidget):
         # Button text reflects the armed target; no further updates needed here.
 
     def _update_armed_ui(self) -> None:
-        """Update helper text and button label for the currently armed target."""
-        friendly_labels = {
-            "A.single": "A (single)",
-            "B.single": "B (single)",
-            "A.num": "A: Numerator",
-            "A.den": "A: Denominator",
-            "B.num": "B: Numerator",
-            "B.den": "B: Denominator",
-            "A.left": "A: Left",
-            "A.right": "A: Right",
-            "B.left": "B: Left",
-            "B.right": "B: Right",
-        }
-        label = friendly_labels.get(self._armed, self._armed.replace(".", ": "))
+        try:
+            bucket, component = self._armed.split(".", 1)
+        except ValueError:
+            bucket, component = "A", "single"
+            self._armed = "A.single"
+
+        component_name = {
+            "single": "single",
+            "num": "numerator",
+            "den": "denominator",
+            "left": "left",
+            "right": "right",
+        }.get(component, component)
+
+        label = f"{bucket} ({component_name})"
         self.armed_label.setText(
             f"Armed target: {label}. Double-click a value in the left grid to add it."
         )
         self.autofill_btn.setText(f"Auto-populate into {label}")
-
-    def _blank_picks(self) -> Dict[str, Dict[str, Dict[str, List[Tuple[int, int, float]]]]]:
-        components = ("single", "num", "den", "left", "right")
-        return {
-            bucket: {comp: {} for comp in components}
-            for bucket in ("A", "B")
-        }
 
     def _refresh_tables(self) -> None:
         self._fill_table(self.tableA, "A")
