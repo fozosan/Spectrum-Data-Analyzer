@@ -267,8 +267,7 @@ class SelectionPanel(QWidget):
         self.removeB_btn.clicked.connect(lambda: self._remove_selected("B"))
         self.clearB_btn.clicked.connect(lambda: self._clear_bucket("B"))
 
-        # Build ALL radios once; just hide/show per mode
-        self._build_all_radios_once()
+        # Build radios for the default mode
         self._apply_mode_visibility("Single")
         self._update_armed_ui()
         # Apply splitter sizes once we're laid out so defaults stick
@@ -409,7 +408,7 @@ class SelectionPanel(QWidget):
 
     # ----------------------------- Internal UI -----------------------------
     def _on_mode_changed(self, new_mode: str) -> None:
-        """Switch Single / Ratio / Difference using show/hide only (no widget deletion)."""
+        """Switch Single / Ratio / Difference by rebuilding the relevant radios."""
         self._mode = (new_mode or "Single")
         self._apply_mode_visibility(self._mode)
         self._refresh_tables()
@@ -422,56 +421,78 @@ class SelectionPanel(QWidget):
             for bucket in ("A", "B")
         }
 
-    def _build_all_radios_once(self) -> None:
-        """Create every radio once; never delete. We only toggle visibility by mode."""
-        # Order determines vertical stacking
-        spec = [
-            ("A.single", "A (single)"),
-            ("B.single", "B (single)"),
-            ("A.num",    "A (numerator)"),
-            ("A.den",    "A (denominator)"),
-            ("B.num",    "B (numerator)"),
-            ("B.den",    "B (denominator)"),
-            ("A.left",   "A (left)"),
-            ("A.right",  "A (right)"),
-            ("B.left",   "B (left)"),
-            ("B.right",  "B (right)"),
-        ]
-        for key, label in spec:
-            rb = QRadioButton(label, self.targets_box)
-            rb.setProperty("armedKey", key)
-            self._armed_group.addButton(rb)
-            self.targets_layout.addWidget(rb)
-            self._target_radio_map[key] = rb
-            self._target_radios.append(rb)
-        self.targets_layout.addStretch(1)
+    def _clear_layout_widgets(self, layout) -> None:
+        """Remove all widgets from a layout safely (single clear pass)."""
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _target_keys_for_mode(self, mode: str) -> List[Tuple[str, str, str]]:
+        spec = {
+            "Single": [
+                ("A", "single", "A (single)"),
+                ("B", "single", "B (single)"),
+            ],
+            "Ratio": [
+                ("A", "num", "A (numerator)"),
+                ("A", "den", "A (denominator)"),
+                ("B", "num", "B (numerator)"),
+                ("B", "den", "B (denominator)"),
+            ],
+            "Difference": [
+                ("A", "left", "A (left)"),
+                ("A", "right", "A (right)"),
+                ("B", "left", "B (left)"),
+                ("B", "right", "B (right)"),
+            ],
+        }
+        return spec.get(mode, spec["Single"])
+
+    def _rebuild_target_radios(self, mode: str) -> None:
+        """
+        Recreate the Armed target radios for the current mode without double-deleting
+        any widgets (which can cause heap corruption on Windows).
+        """
+        # Remove any existing buttons from the group before clearing the layout.
+        for rb in list(self._armed_group.buttons()):
+            self._armed_group.removeButton(rb)
+
+        self._clear_layout_widgets(self.targets_layout)
+        self._target_radios = []
+        self._target_radio_map = {}
+
+        keys = self._target_keys_for_mode(mode)
+        valid_keys = [f"{bucket}.{component}" for bucket, component, _ in keys]
+        desired = self._armed if self._armed in valid_keys else valid_keys[0]
+
+        with QSignalBlocker(self._armed_group):
+            for bucket, component, label in keys:
+                key = f"{bucket}.{component}"
+                rb = QRadioButton(label, self.targets_box)
+                rb.setProperty("armedKey", key)
+                self._armed_group.addButton(rb)
+                self.targets_layout.addWidget(rb)
+                self._target_radios.append(rb)
+                self._target_radio_map[key] = rb
+
+            self.targets_layout.addStretch(1)
+
+            self._armed = desired
+            chosen = self._target_radio_map.get(desired)
+            if chosen is not None:
+                chosen.setChecked(True)
+        self._update_armed_ui()
 
     def _apply_mode_visibility(self, mode: str) -> None:
-        """Show/hide radios by mode; keep a valid checked radio visible."""
+        """Rebuild radios for the requested mode and keep the armed target valid."""
         if self._radio_building:
             return
         self._radio_building = True
         try:
-            want = set()
-            if mode == "Ratio":
-                want = {"A.num", "A.den", "B.num", "B.den"}
-            elif mode == "Difference":
-                want = {"A.left", "A.right", "B.left", "B.right"}
-            else:
-                want = {"A.single", "B.single"}
-
-            # Toggle visibility; do NOT delete widgets
-            for key, rb in self._target_radio_map.items():
-                rb.setVisible(key in want)
-
-            # Ensure armed key is valid & visible
-            if self._armed not in want:
-                # pick the first visible as default
-                self._armed = next(iter(want))
-            chosen = self._target_radio_map.get(self._armed)
-            if chosen is not None and not chosen.isChecked():
-                chosen.setChecked(True)
-            self._update_armed_ui()
+            self._rebuild_target_radios(mode)
         finally:
             self._radio_building = False
 
