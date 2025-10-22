@@ -82,25 +82,21 @@ class SelectionPanel(QWidget):
         self.agg_combo.setToolTip("How to combine multiple picks per component.")
         self.agg_combo.setMinimumWidth(140)
 
-        # Target radios (rebuilt on mode change) — housed in their own group box
-        self.targets_box = QGroupBox("Armed target", self)
+        # Target radios (built once; mode toggles hide/show) — housed in their own group box
+        self.targets_box = QGroupBox(
+            "Armed target — double-click a value in the left grid to add", self
+        )
         self.targets_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        targets_box_layout = QVBoxLayout(self.targets_box)
-        targets_box_layout.setContentsMargins(8, 8, 8, 8)
-        targets_box_layout.setSpacing(6)
-        self.targets_panel = QWidget(self.targets_box)
-        # Radios added dynamically below (stacked vertically)
-        self.targets_layout = QVBoxLayout(self.targets_panel)
-        self.targets_layout.setContentsMargins(0, 0, 0, 0)
+        # Radios container (we will NOT delete/recreate these at runtime)
+        self.targets_layout = QVBoxLayout(self.targets_box)
+        self.targets_layout.setContentsMargins(8, 4, 8, 4)
         self.targets_layout.setSpacing(12)
-        targets_box_layout.addWidget(self.targets_panel)
-        self._target_radios: List[QRadioButton] = []
         self._target_radio_map: Dict[str, QRadioButton] = {}
-        # One exclusive group to manage radios safely
+        self._target_radios: List[QRadioButton] = []
         self._armed_group = QButtonGroup(self.targets_box)
         self._armed_group.setExclusive(True)
         self._armed_group.buttonToggled.connect(self._on_armed_group_toggled)
-        self._radio_building = False
+        self._radio_building = False  # guard during visibility swaps
         self.armed_label = QLabel(
             "Double-click a value in the left grid to add to the armed target.", self
         )
@@ -271,8 +267,9 @@ class SelectionPanel(QWidget):
         self.removeB_btn.clicked.connect(lambda: self._remove_selected("B"))
         self.clearB_btn.clicked.connect(lambda: self._clear_bucket("B"))
 
-        # Initialize mode
-        self._rebuild_target_radios("Single")
+        # Build ALL radios once; just hide/show per mode
+        self._build_all_radios_once()
+        self._apply_mode_visibility("Single")
         self._update_armed_ui()
         # Apply splitter sizes once we're laid out so defaults stick
         QTimer.singleShot(0, self.reset_splitters)
@@ -330,7 +327,7 @@ class SelectionPanel(QWidget):
             self.mode_combo.setCurrentText(requested_mode)
             self.mode_combo.blockSignals(False)
         self._mode = requested_mode
-        self._rebuild_target_radios(requested_mode)
+        self._apply_mode_visibility(requested_mode)
 
         aggregator = state.get("aggregator")
         self.agg_combo.blockSignals(True)
@@ -412,11 +409,11 @@ class SelectionPanel(QWidget):
 
     # ----------------------------- Internal UI -----------------------------
     def _on_mode_changed(self, new_mode: str) -> None:
-        """Switch Single / Ratio / Difference without triggering re-entrant rebuilds."""
-        self._mode = new_mode
-        QTimer.singleShot(0, lambda: self._rebuild_target_radios(self._mode))
-        QTimer.singleShot(0, self._refresh_tables)
-        QTimer.singleShot(0, self._recompute_and_emit)
+        """Switch Single / Ratio / Difference using show/hide only (no widget deletion)."""
+        self._mode = (new_mode or "Single")
+        self._apply_mode_visibility(self._mode)
+        self._refresh_tables()
+        self._recompute_and_emit()
 
     def _blank_picks(self) -> Dict[str, Dict[str, Dict[str, List[Tuple[int, int, float]]]]]:
         components = ("single", "num", "den", "left", "right")
@@ -425,70 +422,63 @@ class SelectionPanel(QWidget):
             for bucket in ("A", "B")
         }
 
-    def _target_keys_for_mode(self, mode: str) -> List[Tuple[str, str, str]]:
-        mode = (mode or "Single").strip()
-        if mode == "Ratio":
-            return [
-                ("A", "num", "A (numerator)"),
-                ("A", "den", "A (denominator)"),
-                ("B", "num", "B (numerator)"),
-                ("B", "den", "B (denominator)"),
-            ]
-        if mode == "Difference":
-            return [
-                ("A", "left", "A (left)"),
-                ("A", "right", "A (right)"),
-                ("B", "left", "B (left)"),
-                ("B", "right", "B (right)"),
-            ]
-        return [("A", "single", "A (single)"), ("B", "single", "B (single)")]
+    def _build_all_radios_once(self) -> None:
+        """Create every radio once; never delete. We only toggle visibility by mode."""
+        # Order determines vertical stacking
+        spec = [
+            ("A.single", "A (single)"),
+            ("B.single", "B (single)"),
+            ("A.num",    "A (numerator)"),
+            ("A.den",    "A (denominator)"),
+            ("B.num",    "B (numerator)"),
+            ("B.den",    "B (denominator)"),
+            ("A.left",   "A (left)"),
+            ("A.right",  "A (right)"),
+            ("B.left",   "B (left)"),
+            ("B.right",  "B (right)"),
+        ]
+        for key, label in spec:
+            rb = QRadioButton(label, self.targets_box)
+            rb.setProperty("armedKey", key)
+            self._armed_group.addButton(rb)
+            self.targets_layout.addWidget(rb)
+            self._target_radio_map[key] = rb
+            self._target_radios.append(rb)
+        self.targets_layout.addStretch(1)
 
-    def _rebuild_target_radios(self, mode: str) -> None:
-        """Recreate the Armed target radios safely (no double-delete, single signal path)."""
+    def _apply_mode_visibility(self, mode: str) -> None:
+        """Show/hide radios by mode; keep a valid checked radio visible."""
         if self._radio_building:
             return
         self._radio_building = True
         try:
-            for btn in list(self._armed_group.buttons()):
-                self._armed_group.removeButton(btn)
-                btn.setParent(None)
-            self._target_radios.clear()
-            self._target_radio_map.clear()
-            while self.targets_layout.count():
-                item = self.targets_layout.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.setParent(None)
+            want = set()
+            if mode == "Ratio":
+                want = {"A.num", "A.den", "B.num", "B.den"}
+            elif mode == "Difference":
+                want = {"A.left", "A.right", "B.left", "B.right"}
+            else:
+                want = {"A.single", "B.single"}
 
-            keys = self._target_keys_for_mode(mode)
-            if not keys:
-                return
-            valid_keys = [f"{bucket}.{component}" for bucket, component, _ in keys]
-            desired = self._armed if self._armed in valid_keys else valid_keys[0]
+            # Toggle visibility; do NOT delete widgets
+            for key, rb in self._target_radio_map.items():
+                rb.setVisible(key in want)
 
-            for bucket, component, label in keys:
-                key = f"{bucket}.{component}"
-                radio = QRadioButton(label, self.targets_box)
-                radio.setProperty("armedKey", key)
-                self._armed_group.addButton(radio)
-                self.targets_layout.addWidget(radio)
-                self._target_radio_map[key] = radio
-                self._target_radios.append(radio)
-
-            self.targets_layout.addStretch(1)
-
-            self._armed = desired
-            chosen = self._target_radio_map.get(desired)
-            if chosen is not None:
+            # Ensure armed key is valid & visible
+            if self._armed not in want:
+                # pick the first visible as default
+                self._armed = next(iter(want))
+            chosen = self._target_radio_map.get(self._armed)
+            if chosen is not None and not chosen.isChecked():
                 chosen.setChecked(True)
             self._update_armed_ui()
         finally:
             self._radio_building = False
 
-    def _on_armed_group_toggled(self, button: QRadioButton, checked: bool) -> None:
-        if not checked or button is None or self._radio_building:
+    def _on_armed_group_toggled(self, btn: QRadioButton, checked: bool) -> None:
+        if not checked or btn is None or self._radio_building:
             return
-        key = button.property("armedKey")
+        key = btn.property("armedKey")
         if key:
             self._armed = str(key)
             self._update_armed_ui()
