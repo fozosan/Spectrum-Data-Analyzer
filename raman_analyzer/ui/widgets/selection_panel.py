@@ -19,7 +19,7 @@ import math
 import statistics
 
 import pandas as pd
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt5.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -38,15 +38,6 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-# -------------------- Default layout knobs (easy to tweak) --------------------
-# Default vertical split between "Manual Selection" (top) and lists (bottom)
-#   [manual_height, lists_height]
-DEFAULT_ROOT_SIZES = [320, 1120]
-
-# Default vertical split for the combined lists area
-#   [A picks, A computed, B picks, B computed]
-DEFAULT_LISTS_SIZES = [420, 240, 420, 240]
-
 # Minimum "visual rows" used to compute table minimum heights
 DEFAULT_MIN_TABLE_ROWS = 8
 # -----------------------------------------------------------------------------
@@ -64,9 +55,13 @@ class SelectionPanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         # Claim space and grow when embedded inside nested splitters.
-        self.setMinimumHeight(260)
-        self.setMinimumWidth(480)
+        self.setMinimumHeight(300)
+        self.setMinimumWidth(520)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Tunables for default sizing
+        self._MIN_CARD_HEIGHT = 240
+        self._DEFAULT_LISTS_SIZES = [480, 260, 480, 260]
 
         self._mode = "Single"  # 'Single' | 'Ratio' | 'Difference'
         self._armed: str = "A.single"  # one of target keys
@@ -86,12 +81,18 @@ class SelectionPanel(QWidget):
         self.agg_combo.setToolTip("How to combine multiple picks per component.")
         self.agg_combo.setMinimumWidth(140)
 
-        # Target radios (rebuilt on mode change) — put radios inside a dedicated box
-        self.targets_panel = QWidget(self)
+        # Target radios (rebuilt on mode change) — housed in their own group box
+        self.targets_box = QGroupBox("Armed target", self)
+        self.targets_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        targets_box_layout = QVBoxLayout(self.targets_box)
+        targets_box_layout.setContentsMargins(8, 8, 8, 8)
+        targets_box_layout.setSpacing(6)
+        self.targets_panel = QWidget(self.targets_box)
         # Radios added dynamically (stacked vertically)
         self.targets_layout = QVBoxLayout(self.targets_panel)
         self.targets_layout.setContentsMargins(0, 0, 0, 0)
         self.targets_layout.setSpacing(12)
+        targets_box_layout.addWidget(self.targets_panel)
         self._target_radios: List[QRadioButton] = []
         self._target_radio_map: Dict[str, QRadioButton] = {}
         self.armed_label = QLabel(
@@ -143,7 +144,7 @@ class SelectionPanel(QWidget):
             horizontal = table.horizontalHeader()
             row_height = vertical.defaultSectionSize()
             header_height = horizontal.height()
-            table.setMinimumHeight(header_height + row_height * rows + 18)
+            table.setMinimumHeight(max(self._MIN_CARD_HEIGHT, header_height + row_height * rows + 20))
             horizontal.setSectionResizeMode(QHeaderView.Interactive)
             horizontal.setStretchLastSection(True)
 
@@ -157,32 +158,33 @@ class SelectionPanel(QWidget):
         self.removeB_btn = QPushButton("Remove Selected (B)", self)
         self.clearB_btn = QPushButton("Clear B", self)
 
-        # ---------- Manual Selection (top) ----------
+        # ---------- Manual Selection (top; not inside any splitter) ----------
         manual_box = QGroupBox("Manual Selection", self)
-        manual_box.setMinimumHeight(320)
         manual_layout = QVBoxLayout(manual_box)
         manual_layout.setContentsMargins(8, 8, 8, 8)
-        manual_layout.setSpacing(12)
+        manual_layout.setSpacing(8)
 
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         form.addRow("Mode", self.mode_combo)
         form.addRow("Aggregator", self.agg_combo)
-        form.addRow("Armed target", self.targets_panel)
-        form.addRow("", self.armed_label)
-
-        auto_header = QLabel("Auto-populate", manual_box)
-        auto_header.setStyleSheet("font-weight: bold;")
-        form.addRow(auto_header)
-        form.addRow("Row", self.row_spin)
-        form.addRow("Col", self.col_spin)
-        form.addRow("Across", self.scope_combo)
-        form.addRow("", self.autofill_btn)
         manual_layout.addLayout(form)
 
-        self.targets_panel.setMinimumHeight(160)
+        manual_layout.addWidget(self.targets_box)
+        manual_layout.addWidget(self.armed_label)
 
-        # --- Lists area (everything aligned vertically) ---
+        auto_box = QGroupBox("Auto-populate", manual_box)
+        auto_form = QFormLayout(auto_box)
+        auto_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        auto_form.addRow("Row", self.row_spin)
+        auto_form.addRow("Col", self.col_spin)
+        auto_form.addRow("Across", self.scope_combo)
+        auto_form.addRow(self.autofill_btn)
+        manual_layout.addWidget(auto_box)
+
+        self.targets_box.setMinimumHeight(160)
+
+        # --- Lists area (everything aligned vertically; single FLAT splitter) ---
         a_buttons_row = QHBoxLayout()
         a_buttons_row.addWidget(self.removeA_btn)
         a_buttons_row.addWidget(self.clearA_btn)
@@ -190,7 +192,7 @@ class SelectionPanel(QWidget):
         a_buttons_widget.setLayout(a_buttons_row)
 
         a_picks_box = QGroupBox("Selection A — Picks", self)
-        a_picks_box.setMinimumHeight(300)
+        a_picks_box.setMinimumHeight(self._MIN_CARD_HEIGHT + 60)
         a_picks_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         a_picks_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         a_picks_v = QVBoxLayout(a_picks_box)
@@ -200,7 +202,7 @@ class SelectionPanel(QWidget):
         a_picks_v.addWidget(a_buttons_widget)
 
         a_comp_box = QGroupBox("Computed A (per file)", self)
-        a_comp_box.setMinimumHeight(220)
+        a_comp_box.setMinimumHeight(self._MIN_CARD_HEIGHT)
         a_comp_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         a_comp_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         a_comp_v = QVBoxLayout(a_comp_box)
@@ -215,7 +217,7 @@ class SelectionPanel(QWidget):
         b_buttons_widget.setLayout(b_buttons_row)
 
         b_picks_box = QGroupBox("Selection B — Picks", self)
-        b_picks_box.setMinimumHeight(300)
+        b_picks_box.setMinimumHeight(self._MIN_CARD_HEIGHT + 60)
         b_picks_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         b_picks_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         b_picks_v = QVBoxLayout(b_picks_box)
@@ -225,7 +227,7 @@ class SelectionPanel(QWidget):
         b_picks_v.addWidget(b_buttons_widget)
 
         b_comp_box = QGroupBox("Computed B (per file)", self)
-        b_comp_box.setMinimumHeight(220)
+        b_comp_box.setMinimumHeight(self._MIN_CARD_HEIGHT)
         b_comp_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         b_comp_box.setStyleSheet("QGroupBox{font-weight: 600;}")
         b_comp_v = QVBoxLayout(b_comp_box)
@@ -245,25 +247,14 @@ class SelectionPanel(QWidget):
         lists_splitter.setStretchFactor(1, 3)
         lists_splitter.setStretchFactor(2, 4)
         lists_splitter.setStretchFactor(3, 3)
-        lists_splitter.setSizes(list(DEFAULT_LISTS_SIZES))
+        lists_splitter.setSizes(list(self._DEFAULT_LISTS_SIZES))
         self._lists_splitter = lists_splitter
-        self._default_lists_sizes = list(DEFAULT_LISTS_SIZES)
-
-        # Root: manual controls on top, lists at bottom (resizable vertically)
-        root_splitter = QSplitter(Qt.Vertical, self)
-        root_splitter.setChildrenCollapsible(False)
-        root_splitter.setHandleWidth(6)
-        root_splitter.addWidget(manual_box)
-        root_splitter.addWidget(lists_splitter)
-        root_splitter.setStretchFactor(0, 0)
-        root_splitter.setStretchFactor(1, 1)
-        root_splitter.setSizes(list(DEFAULT_ROOT_SIZES))
-        self._root_splitter = root_splitter
-        self._default_root_sizes = list(DEFAULT_ROOT_SIZES)
-
+        self._default_lists_sizes = list(self._DEFAULT_LISTS_SIZES)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(root_splitter)
+        root.setSpacing(10)
+        root.addWidget(manual_box)
+        root.addWidget(lists_splitter, 1)
 
         # Wire
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
@@ -287,10 +278,12 @@ class SelectionPanel(QWidget):
     def reset_splitters(self) -> None:
         """Restore splitter sizes to their initial proportions."""
 
-        if hasattr(self, "_root_splitter") and self._root_splitter is not None:
-            self._root_splitter.setSizes(list(self._default_root_sizes))
         if hasattr(self, "_lists_splitter") and self._lists_splitter is not None:
             self._lists_splitter.setSizes(list(self._default_lists_sizes))
+
+    def sizeHint(self) -> QSize:  # pragma: no cover - GUI sizing hint
+        height = 160 + sum(self._DEFAULT_LISTS_SIZES)
+        return QSize(900, max(1200, height))
 
     def get_state(self) -> dict:
         """Return a JSON-serializable snapshot of the current selections."""

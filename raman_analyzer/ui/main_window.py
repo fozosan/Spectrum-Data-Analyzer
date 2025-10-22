@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
         # -------------------- Default layout knobs --------------------
         # Width split between left and right panes (main horizontal splitter)
         #   [left_width, right_width]
-        self.DEFAULT_MAIN_SPLIT_SIZES = [520, 880]
+        self.DEFAULT_MAIN_SPLIT_SIZES = [560, 840]
 
         # Height split for the left stack (file list over data table)
         #   [file_list_height, data_table_height]
@@ -217,6 +217,8 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        # Start with a bit more width on the left, keep right compact
+        splitter.setSizes([560, 840])
         self._main_splitter = splitter
 
         central_layout.addWidget(splitter)
