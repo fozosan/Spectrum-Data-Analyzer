@@ -21,6 +21,7 @@ import statistics
 import pandas as pd
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QSignalBlocker, QTimer
 from PyQt5.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -72,6 +73,13 @@ class SelectionPanel(QWidget):
             self._blank_picks()
         )
 
+        # --- Armed target (radio group) ---
+        # We manage all radios through one exclusive QButtonGroup to avoid
+        # per-radio toggled re-entrancy and crashy teardown.
+        self._armed_group = QButtonGroup(self)  # parent is panel; radios parented to targets_box
+        self._armed_group.setExclusive(True)
+        self._armed_id_map: Dict[int, str] = {}
+
         self.mode_combo = QComboBox(self)
         self.mode_combo.addItems(["Single", "Ratio", "Difference"])
         self.mode_combo.setMinimumWidth(140)
@@ -88,7 +96,7 @@ class SelectionPanel(QWidget):
         targets_box_layout.setContentsMargins(8, 8, 8, 8)
         targets_box_layout.setSpacing(6)
         self.targets_panel = QWidget(self.targets_box)
-        # Radios added dynamically (stacked vertically)
+        # Radios added dynamically below (stacked vertically)
         self.targets_layout = QVBoxLayout(self.targets_panel)
         self.targets_layout.setContentsMargins(0, 0, 0, 0)
         self.targets_layout.setSpacing(12)
@@ -438,14 +446,22 @@ class SelectionPanel(QWidget):
 
     def _rebuild_target_radios(self, mode: str) -> None:
         """Recreate the Armed target radios for the current mode in a safe order."""
-        # Guard against re-entrancy while we're tearing down/creating widgets.
+        # Block mode combo signals while we rebuild
         _blocker = QSignalBlocker(self.mode_combo)
+        # Also block the group to avoid re-entrant idClicked while clearing
+        _grp_block = QSignalBlocker(self._armed_group)
 
         # Clear out any existing radios from the layout.
         for rb in self._target_radios:
             rb.deleteLater()
         self._target_radios = []
         self._target_radio_map = {}
+        # Remove old buttons from the group explicitly
+        for btn in list(self._armed_group.buttons()):
+            self._armed_group.removeButton(btn)
+            # btn is already in _target_radios and will be deleteLater above
+        self._armed_id_map.clear()
+
         while self.targets_layout.count():
             item = self.targets_layout.takeAt(0)
             widget = item.widget()
@@ -457,28 +473,46 @@ class SelectionPanel(QWidget):
         valid_keys = [f"{bucket}.{component}" for bucket, component, _ in keys]
         desired = self._armed if self._armed in valid_keys else valid_keys[0]
 
-        for bucket, component, label in keys:
+        for idx, (bucket, component, label) in enumerate(keys):
             key = f"{bucket}.{component}"
             # IMPORTANT: parent the radios to the actual group box.
             rb = QRadioButton(label, self.targets_box)
-            rb.toggled.connect(lambda checked, k=key: self._set_armed(k, checked))
+            # Add to the exclusive group and remember key by id
+            self._armed_group.addButton(rb, idx)
+            self._armed_id_map[idx] = key
             self.targets_layout.addWidget(rb)
             self._target_radio_map[key] = rb
             self._target_radios.append(rb)
 
         self.targets_layout.addStretch(1)
-        # Arm the desired target after radios exist (and only then set the check).
+        # Connect the group exactly once (idClicked = after a button is clicked)
+        try:
+            self._armed_group.idClicked.disconnect()
+        except Exception:
+            pass
+        self._armed_group.idClicked.connect(self._on_armed_id_clicked)
+
+        # Arm the desired target AFTER radios exist, without firing handlers.
         self._armed = desired
-        chosen = self._target_radio_map.get(desired)
-        if chosen is not None and not chosen.isChecked():
-            chosen.setChecked(True)
+        desired_id = None
+        for _id, _key in self._armed_id_map.items():
+            if _key == desired:
+                desired_id = _id
+                break
+        if desired_id is not None:
+            _rb = self._armed_group.button(desired_id)
+            if _rb is not None:
+                with QSignalBlocker(self._armed_group):
+                    _rb.setChecked(True)
         # Reflect helper text & button label.
         self._update_armed_ui()
 
-    def _set_armed(self, key: str, checked: bool) -> None:
-        if checked:
-            self._armed = key
-            self._update_armed_ui()
+    def _on_armed_id_clicked(self, _id: int) -> None:
+        key = self._armed_id_map.get(_id)
+        if not key:
+            return
+        self._armed = key
+        self._update_armed_ui()
 
     def _set_armed_radio(self, key: str) -> None:
         self._armed = key
