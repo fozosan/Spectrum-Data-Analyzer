@@ -19,7 +19,7 @@ import math
 import statistics
 
 import pandas as pd
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QSignalBlocker, QTimer
 from PyQt5.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -436,45 +436,43 @@ class SelectionPanel(QWidget):
             ]
         return [("A", "single", "A (single)"), ("B", "single", "B (single)")]
 
-    def _clear_layout(self, layout) -> None:
-        """Safely remove and delete all widgets from a layout (no double deletes)."""
-        while layout.count():
-            item = layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
-
     def _rebuild_target_radios(self, mode: str) -> None:
-        # Stop signals from existing radios to avoid re-entrant toggles during teardown
-        for rb in getattr(self, "_target_radios", []):
-            try:
-                rb.blockSignals(True)
-            except Exception:
-                pass
-        # Clear UI safely (single pass)
-        self._clear_layout(self.targets_layout)
+        """Recreate the Armed target radios for the current mode in a safe order."""
+        # Guard against re-entrancy while we're tearing down/creating widgets.
+        _blocker = QSignalBlocker(self.mode_combo)
+
+        # Clear out any existing radios from the layout.
+        for rb in self._target_radios:
+            rb.deleteLater()
         self._target_radios = []
         self._target_radio_map = {}
+        while self.targets_layout.count():
+            item = self.targets_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
+        # Build radios for the requested mode.
         keys = self._target_keys_for_mode(mode)
         valid_keys = [f"{bucket}.{component}" for bucket, component, _ in keys]
         desired = self._armed if self._armed in valid_keys else valid_keys[0]
 
         for bucket, component, label in keys:
             key = f"{bucket}.{component}"
-            # Use the correct parent and prevent signals while setting default state
+            # IMPORTANT: parent the radios to the actual group box.
             rb = QRadioButton(label, self.targets_box)
-            rb.blockSignals(True)
-            rb.setChecked(key == desired)
-            rb.blockSignals(False)
             rb.toggled.connect(lambda checked, k=key: self._set_armed(k, checked))
             self.targets_layout.addWidget(rb)
-            self._target_radios.append(rb)
             self._target_radio_map[key] = rb
+            self._target_radios.append(rb)
 
         self.targets_layout.addStretch(1)
+        # Arm the desired target after radios exist (and only then set the check).
         self._armed = desired
+        chosen = self._target_radio_map.get(desired)
+        if chosen is not None and not chosen.isChecked():
+            chosen.setChecked(True)
+        # Reflect helper text & button label.
         self._update_armed_ui()
 
     def _set_armed(self, key: str, checked: bool) -> None:
