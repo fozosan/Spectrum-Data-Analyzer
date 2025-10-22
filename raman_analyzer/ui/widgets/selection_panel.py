@@ -21,6 +21,7 @@ import statistics
 import pandas as pd
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt5.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -93,7 +94,7 @@ class SelectionPanel(QWidget):
         self.targets_layout.setContentsMargins(0, 0, 0, 0)
         self.targets_layout.setSpacing(12)
         targets_box_layout.addWidget(self.targets_panel)
-        self._target_radios: List[QRadioButton] = []
+        self._armed_group: Optional[QButtonGroup] = None
         self._target_radio_map: Dict[str, QRadioButton] = {}
         self.armed_label = QLabel(
             "Double-click a value in the left grid to add to the armed target.", self
@@ -407,7 +408,8 @@ class SelectionPanel(QWidget):
     # ----------------------------- Internal UI -----------------------------
     def _on_mode_changed(self, new_mode: str) -> None:
         self._mode = new_mode
-        self._rebuild_target_radios(new_mode)
+        # Defer rebuild to next event loop tick to avoid re-entrancy during combo change
+        QTimer.singleShot(0, lambda m=new_mode: self._rebuild_target_radios(m))
         self._refresh_tables()
         self._recompute_and_emit()
 
@@ -446,20 +448,25 @@ class SelectionPanel(QWidget):
                 w.deleteLater()
 
     def _rebuild_target_radios(self, mode: str) -> None:
-        # Stop signals from existing radios to avoid re-entrant toggles during teardown
-        for rb in getattr(self, "_target_radios", []):
+        # Tear down old group safely
+        if self._armed_group is not None:
             try:
-                rb.blockSignals(True)
+                self._armed_group.blockSignals(True)
             except Exception:
                 pass
+            self._armed_group.deleteLater()
+            self._armed_group = None
         # Clear UI safely (single pass)
         self._clear_layout(self.targets_layout)
-        self._target_radios = []
         self._target_radio_map = {}
 
         keys = self._target_keys_for_mode(mode)
         valid_keys = [f"{bucket}.{component}" for bucket, component, _ in keys]
         desired = self._armed if self._armed in valid_keys else valid_keys[0]
+
+        # New exclusive group (prevents multiple toggled signals racing)
+        self._armed_group = QButtonGroup(self.targets_box)
+        self._armed_group.setExclusive(True)
 
         for bucket, component, label in keys:
             key = f"{bucket}.{component}"
@@ -468,14 +475,24 @@ class SelectionPanel(QWidget):
             rb.blockSignals(True)
             rb.setChecked(key == desired)
             rb.blockSignals(False)
-            rb.toggled.connect(lambda checked, k=key: self._set_armed(k, checked))
+            rb.setProperty("armed_key", key)
+            self._armed_group.addButton(rb)
             self.targets_layout.addWidget(rb)
-            self._target_radios.append(rb)
             self._target_radio_map[key] = rb
+
+        if self._armed_group is not None:
+            self._armed_group.buttonToggled.connect(self._on_armed_group_toggled)
 
         self.targets_layout.addStretch(1)
         self._armed = desired
         self._update_armed_ui()
+
+    def _on_armed_group_toggled(self, btn: QRadioButton, checked: bool) -> None:
+        if not checked or btn is None:
+            return
+        key = btn.property("armed_key")
+        if key:
+            self._set_armed(str(key), True)
 
     def _set_armed(self, key: str, checked: bool) -> None:
         if checked:
@@ -485,10 +502,11 @@ class SelectionPanel(QWidget):
     def _set_armed_radio(self, key: str) -> None:
         self._armed = key
         radio = self._target_radio_map.get(key)
-        if radio is not None and not radio.isChecked():
+        if radio is not None:
+            radio.blockSignals(True)
             radio.setChecked(True)
-        else:
-            self._update_armed_ui()
+            radio.blockSignals(False)
+        self._update_armed_ui()
 
     def _on_autofill(self) -> None:
         target = self._armed
