@@ -20,5 +20,4 @@ classifiers = [
 "Homepage" = "https://github.com/"
 
 [project.scripts]
-raman-analyzer = "raman_analyzer.app:main"
 raman-analyzer-tk = "raman_analyzer.tkui.app:main"
