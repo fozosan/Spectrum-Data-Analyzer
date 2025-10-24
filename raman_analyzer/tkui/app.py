@@ -74,7 +74,11 @@ class TkRamanApp:
         )
         self.selection_panel.pack(side="top", fill="both", expand=True)
 
-        self.plot_panel = PlotPanel(right_split, session=self.session)
+        self.plot_panel = PlotPanel(
+            right_split,
+            session=self.session,
+            controls_parent=controls,
+        )
         right_split.add(self.plot_panel, weight=2)
 
         self.root.geometry("1280x800")
@@ -311,7 +315,7 @@ class TkRamanApp:
             ordered = ["Selection A", "Selection B"]
 
         if hasattr(self, "plot_panel"):
-            self.plot_panel.set_metrics(ordered)
+            self.plot_panel.set_metrics_for_xy(ordered)
 
 
 def main() -> None:
