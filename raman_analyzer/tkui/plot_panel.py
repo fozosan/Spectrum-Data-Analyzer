@@ -24,15 +24,31 @@ from raman_analyzer.analysis.trendlines import (
 )
 
 
+def _safe_float(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return np.nan
+
+
 class PlotPanel(ttk.Frame):
     """Encapsulates plot configuration widgets and the Matplotlib canvas."""
 
-    def __init__(self, master: tk.Misc, *, session) -> None:
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        session,
+        controls_parent: tk.Misc,
+    ) -> None:
         super().__init__(master)
         self.session = session
 
         # --------------------------- controls ---------------------------
-        control_box = ttk.LabelFrame(self, text="Plot")
+        self.controls_container = ttk.Frame(controls_parent)
+        self.controls_container.pack(side="top", fill="x", expand=True)
+
+        control_box = ttk.LabelFrame(self.controls_container, text="Plot")
         control_box.pack(side="top", fill="x", padx=6, pady=6)
 
         self.x_field = tk.StringVar(value="X Mapping")
@@ -76,7 +92,7 @@ class PlotPanel(ttk.Frame):
         ttk.Button(export_row, text="Export Group Stats", command=self._export_group_stats).pack(side="left", padx=2)
 
         # -------------------- fit / intersections --------------------
-        fit_box = ttk.LabelFrame(self, text="Trendline & Intersections")
+        fit_box = ttk.LabelFrame(self.controls_container, text="Trendline & Intersections")
         fit_box.pack(side="top", fill="x", padx=6, pady=(0, 6))
 
         self.fit_model = tk.StringVar(value="Linear")
@@ -98,14 +114,11 @@ class PlotPanel(ttk.Frame):
 
         self.intersections_box = tk.Listbox(fit_box, height=5)
         self.intersections_box.grid(row=2, column=0, columnspan=3, sticky="ew", padx=2, pady=(2, 6))
-        ttk.Button(fit_box, text="Intersections", command=self._on_intersections).grid(
+        ttk.Button(fit_box, text="Export Intersections", command=self._export_intersections).grid(
             row=3, column=0, padx=2, pady=2, sticky="w"
         )
-        ttk.Button(fit_box, text="Export Intersections", command=self._export_intersections).grid(
-            row=3, column=1, padx=2, pady=2, sticky="w"
-        )
         ttk.Button(fit_box, text="Export Residuals", command=self._export_residuals).grid(
-            row=3, column=2, padx=2, pady=2, sticky="w"
+            row=3, column=1, padx=2, pady=2, sticky="w"
         )
 
         literature_box = ttk.LabelFrame(fit_box, text="Literature Overlay")
@@ -134,6 +147,11 @@ class PlotPanel(ttk.Frame):
         literature_buttons.grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 2))
         ttk.Button(literature_buttons, text="Overlay", command=self._overlay_literature).pack(side="left", padx=2)
         ttk.Button(literature_buttons, text="Clear", command=self._clear_literature).pack(side="left", padx=2)
+        ttk.Button(
+            literature_buttons,
+            text="Find Intersections",
+            command=self._on_intersections,
+        ).pack(side="left", padx=2)
 
         # --------------------------- figure ---------------------------
         self.figure = Figure(figsize=(6, 4), dpi=120)
@@ -147,45 +165,59 @@ class PlotPanel(ttk.Frame):
         self._literature: list[dict[str, object]] = []
 
     # ------------------------------------------------------------------ public API
-    def set_metrics(self, names: Sequence[str]) -> None:
-        values = tuple(names or ())
+    def set_metrics_for_xy(self, names: Sequence[str]) -> None:
+        metrics = [str(name) for name in names if name]
+
+        choices: list[str] = ["X Mapping", "Tag (numeric)"]
+        choices.extend(metrics)
+
+        values = tuple(choices)
+        self.x_combo["values"] = values
         self.y_combo["values"] = values
-        if not values:
-            self.y_field.set("")
-            return
 
-        current = self.y_field.get()
-        if current in values:
-            return
+        def _ensure_selection(var: tk.StringVar, combo: ttk.Combobox, fallbacks: Sequence[str]) -> None:
+            current = var.get()
+            if current in values:
+                combo.current(values.index(current))
+                return
+            for candidate in fallbacks:
+                if candidate in values:
+                    var.set(candidate)
+                    combo.current(values.index(candidate))
+                    return
+            var.set("")
+            combo.set("")
 
-        preferred = [name for name in ("Selection A", "Selection B") if name in values]
-        if preferred:
-            self.y_field.set(preferred[0])
-            self.y_combo.current(values.index(preferred[0]))
-        else:
-            self.y_field.set(values[0])
-            self.y_combo.current(0)
+        x_fallbacks = [
+            self.x_field.get(),
+            "X Mapping",
+            "Tag (numeric)",
+            *metrics,
+        ]
+        _ensure_selection(self.x_field, self.x_combo, x_fallbacks)
+        x_choice = self.x_field.get()
+
+        preferred_y = [name for name in ("Selection A", "Selection B") if name in values]
+        y_fallbacks = [
+            self.y_field.get(),
+            *preferred_y,
+            *[item for item in values if item not in {"X Mapping", "Tag (numeric)", x_choice}],
+            *[item for item in ("X Mapping", "Tag (numeric)") if item != x_choice],
+        ]
+        _ensure_selection(self.y_field, self.y_combo, y_fallbacks)
+
+    def set_metrics(self, names: Sequence[str]) -> None:
+        self.set_metrics_for_xy(names)
 
     # ------------------------------------------------------------------ plotting helpers
-    def _build_xy(self, y_name: str) -> pd.DataFrame | None:
+    def _build_xy(self, x_label: str, y_label: str) -> pd.DataFrame | None:
         df = self.session.results_df
         if df is None or df.empty:
             return None
 
         work = df.copy()
-        if self.x_field.get() == "X Mapping":
-            mapping = dict(self.session.x_mapping or {})
-            work["x"] = work["file"].map(lambda fid: float(mapping.get(fid, np.nan)))
-        else:
-            def _to_float(tag: object) -> float:
-                try:
-                    return float(tag)
-                except (TypeError, ValueError):
-                    return np.nan
-
-            work["x"] = work["tag"].map(_to_float)
-
-        work["y"] = work[y_name]
+        work["x"] = self._resolve_axis(x_label, work)
+        work["y"] = self._resolve_axis(y_label, work)
         cols = ["file", "tag", "x", "y"]
         existing_cols = [c for c in cols if c in work.columns]
         work = work[existing_cols]
@@ -200,18 +232,49 @@ class PlotPanel(ttk.Frame):
             work["__group__"] = "All"
         return work
 
+    def _resolve_axis(self, label: str, work: pd.DataFrame) -> pd.Series:
+        if label == "X Mapping":
+            mapping = dict(getattr(self.session, "x_mapping", {}) or {})
+            files = work["file"] if "file" in work.columns else pd.Series(index=work.index, dtype=object)
+            return files.map(lambda fid: _safe_float(mapping.get(str(fid))))
+        if label == "Tag (numeric)":
+            tags = work["tag"] if "tag" in work.columns else pd.Series(index=work.index, dtype=object)
+            return tags.map(_safe_float)
+
+        series = work.get(label)
+        if series is None:
+            return pd.Series(np.nan, index=work.index)
+        return pd.to_numeric(series, errors="coerce")
+
     def _on_plot(self) -> None:
-        y_name = self.y_field.get().strip()
-        if not y_name:
+        x_label = self.x_field.get().strip()
+        y_label = self.y_field.get().strip()
+        if not y_label:
             messagebox.showinfo("Plot", "Choose a Y metric to plot.")
+            return
+        if not x_label:
+            messagebox.showinfo("Plot", "Choose an X source to plot.")
             return
 
         df = self.session.results_df
-        if df is None or df.empty or y_name not in df.columns:
-            messagebox.showinfo("Plot", "No data available for the selected metric.")
+        if df is None or df.empty:
+            messagebox.showinfo("Plot", "No data available to plot.")
             return
 
-        work = self._build_xy(y_name)
+        def _axis_available(label: str) -> bool:
+            if label in {"X Mapping", "Tag (numeric)"}:
+                return True
+            return label in df.columns
+
+        if not _axis_available(x_label):
+            messagebox.showinfo("Plot", f"No data available for X: {x_label}.")
+            return
+
+        if not _axis_available(y_label):
+            messagebox.showinfo("Plot", f"No data available for Y: {y_label}.")
+            return
+
+        work = self._build_xy(x_label, y_label)
         if work is None or work.empty:
             messagebox.showinfo("Plot", "No valid X/Y pairs to plot.")
             return
@@ -249,8 +312,8 @@ class PlotPanel(ttk.Frame):
                         label=None if grp_label in ("", "All") else f"{grp_label} (±SEM)",
                     )
 
-        self.axes.set_xlabel(self.x_field.get())
-        self.axes.set_ylabel(y_name)
+        self.axes.set_xlabel(x_label)
+        self.axes.set_ylabel(y_label)
         self.axes.grid(True, linestyle="--", alpha=0.3)
 
         if self._fit is not None and not work.empty:
@@ -409,6 +472,10 @@ class PlotPanel(ttk.Frame):
     def _on_intersections(self) -> None:
         self.intersections_box.delete(0, tk.END)
         if self._fit is None:
+            messagebox.showinfo(
+                "Intersections",
+                "No trendline has been fitted yet.\n\nFit a trendline to the current data before finding intersections.",
+            )
             self.intersections_box.insert(tk.END, "Fit required first.")
             return
         if not self._literature:
