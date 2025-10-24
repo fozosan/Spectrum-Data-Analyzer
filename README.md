@@ -10,7 +10,11 @@ A desktop application for post-peak Raman spectroscopy analysis based on CSV exp
 pip install -r requirements.txt
 ```
 
-### Running the application
+**Dependencies**: numpy, pandas, matplotlib
+
+> Note: The UI is implemented with Tk (standard library). On Linux you may need the OS package `python3-tk`.
+
+### Run (Tk GUI)
 
 ```bash
 python app.py

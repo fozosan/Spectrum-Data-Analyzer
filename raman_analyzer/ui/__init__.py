@@ -1,1 +1,1 @@
-# Marks 'raman_analyzer.ui' as a regular package.
+# legacy UI package intentionally left empty after Tk migration

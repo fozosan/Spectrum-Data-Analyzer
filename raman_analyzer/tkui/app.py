@@ -5,22 +5,20 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 import pandas as pd
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.figure import Figure
 
 from raman_analyzer.models.session import AnalysisSession
+from raman_analyzer.tkui.plot_panel import PlotPanel
 from raman_analyzer.tkui.widgets import DataTable, ScrollFrame, SelectionPanel
 
 
 class TkRamanApp:
     """Main application controller for the Tkinter Raman Analyzer UI."""
 
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, session: Optional[AnalysisSession] = None):
         self.root = root
         self.root.title("Raman Analyzer (Tk)")
-        self.session = AnalysisSession()
+        self.session = session or AnalysisSession()
         self.current_file: Optional[str] = None
 
         self._build_menu()
@@ -69,34 +67,19 @@ class TkRamanApp:
         controls = controls_scroll.inner
 
         self.selection_panel = SelectionPanel(
-            controls, on_metrics_updated=self._on_metrics_updated
+            controls,
+            session=self.session,
+            on_metrics=self._on_metrics_updated,
+            on_autopopulate=self._on_autopopulate,
         )
         self.selection_panel.pack(side="top", fill="both", expand=True)
 
-        plot_box = ttk.LabelFrame(controls, text="Plot")
-        plot_box.pack(side="top", fill="x", padx=6, pady=6)
-        ttk.Label(plot_box, text="Y metric").pack(side="top", anchor="w")
-        self.y_metric = tk.StringVar(value="Selection A")
-        ttk.Combobox(
-            plot_box,
-            textvariable=self.y_metric,
-            values=["Selection A", "Selection B"],
-            state="readonly",
-        ).pack(side="top", fill="x")
-        ttk.Button(plot_box, text="Plot", command=self._plot).pack(
-            side="top", pady=(6, 0), anchor="w"
-        )
-
-        chart_box = ttk.LabelFrame(right_split, text="Chart")
-        right_split.add(chart_box, weight=2)
-        self.figure = Figure(figsize=(6, 4), dpi=100)
-        self.axes = self.figure.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.figure, master=chart_box)
-        self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
-        NavigationToolbar2Tk(self.canvas, chart_box)
+        self.plot_panel = PlotPanel(right_split, session=self.session)
+        right_split.add(self.plot_panel, weight=2)
 
         self.root.geometry("1280x800")
         self.root.minsize(900, 600)
+        self._refresh_plot_metrics()
 
     # ------------------------------------------------------------------ data IO
     def _load_csvs(self) -> None:
@@ -143,6 +126,7 @@ class TkRamanApp:
             self._on_file_selected(None)
 
         self.selection_panel.set_context(self.session.file_to_tag)
+        self._refresh_plot_metrics()
 
     def _import_mapping_csv(self) -> None:
         path = filedialog.askopenfilename(
@@ -210,6 +194,7 @@ class TkRamanApp:
         table = self.session.get_raw_table(self.current_file)
         if table is not None:
             self.data_table.set_dataframe(table)
+            self.selection_panel.set_context(self.session.file_to_tag)
             return
 
         raw = self.session.raw_df
@@ -219,6 +204,7 @@ class TkRamanApp:
 
         subset = raw[raw["file"].astype(str) == str(self.current_file)]
         self.data_table.set_dataframe(subset)
+        self.selection_panel.set_context(self.session.file_to_tag)
 
     def _on_cell_double_click(self, row1: int, col1: int, value: Any) -> None:
         if not self.current_file:
@@ -238,7 +224,11 @@ class TkRamanApp:
         )
 
     def _on_metrics_updated(
-        self, selection_a: pd.DataFrame, selection_b: pd.DataFrame
+        self,
+        a_name: str,
+        selection_a: pd.DataFrame,
+        b_name: str,
+        selection_b: pd.DataFrame,
     ) -> None:
         try:
             if isinstance(selection_a, pd.DataFrame):
@@ -247,55 +237,81 @@ class TkRamanApp:
                     if not selection_a.empty
                     else pd.DataFrame(columns=["file", "value"])
                 )
-                self.session.update_metric("Selection A", safe_a)
+                self.session.update_metric(a_name, safe_a)
             if isinstance(selection_b, pd.DataFrame):
                 safe_b = (
                     selection_b[["file", "value"]]
                     if not selection_b.empty
                     else pd.DataFrame(columns=["file", "value"])
                 )
-                self.session.update_metric("Selection B", safe_b)
+                self.session.update_metric(b_name, safe_b)
         except Exception:  # pragma: no cover - defensive
             pass
+        self._refresh_plot_metrics()
 
-    # ------------------------------------------------------------------ plotting
-    def _plot(self) -> None:
-        results = self.session.results_df
-        if results is None or results.empty:
-            messagebox.showwarning("Plot", "No data available to plot.")
-            return
-
-        target = self.y_metric.get()
-        if target not in results.columns:
-            messagebox.showwarning("Plot", f"No data for {target}. Add picks first.")
-            return
-
-        raw = self.session.raw_df
-        files: List[str]
-        if raw is not None and not raw.empty and "file" in raw.columns:
-            files = raw["file"].astype(str).dropna().unique().tolist()
+    def _on_autopopulate(
+        self, target_key: str, row1: int, col1: int, scope: str
+    ) -> None:
+        if scope == "All":
+            raw = self.session.raw_df
+            if raw is not None and not raw.empty and "file" in raw.columns:
+                files = (
+                    raw["file"].astype(str).dropna().unique().tolist()
+                )
+            else:
+                files = []
         else:
-            files = results["file"].astype(str).dropna().unique().tolist()
+            selection = self.files_list.curselection()
+            files = [self.files_list.get(i) for i in selection]
+            if not files and self.current_file:
+                files = [self.current_file]
 
         if not files:
-            messagebox.showwarning("Plot", "No files loaded to plot.")
+            messagebox.showinfo(
+                "Auto-populate", "No files available for the requested scope."
+            )
             return
 
-        mapping = dict(self.session.x_mapping or {})
-        if mapping:
-            x_values = [mapping.get(file_id, np.nan) for file_id in files]
+        for file_id in files:
+            table = self.session.get_raw_table(file_id)
+            if table is None or table.empty:
+                continue
+            try:
+                r_idx = max(0, row1 - 1)
+                c_idx = max(0, col1 - 1)
+                value = float(table.iloc[r_idx, c_idx])
+            except Exception:
+                continue
+            tag = self.session.file_to_tag.get(file_id, "")
+            self.selection_panel.add_pick(
+                file_id,
+                row1,
+                col1,
+                value,
+                target=target_key,
+                tag=tag,
+            )
+
+    def _refresh_plot_metrics(self) -> None:
+        """Update the plot metric combobox from the session results table."""
+
+        df = getattr(self.session, "results_df", pd.DataFrame())
+        if df is None or df.empty:
+            metrics: List[str] = []
         else:
-            x_values = list(range(len(files)))
+            metrics = [
+                str(col)
+                for col in df.columns
+                if col not in {"file", "tag"}
+            ]
 
-        y_lookup = dict(zip(results["file"].astype(str), results[target]))
-        y_values = [y_lookup.get(file_id, np.nan) for file_id in files]
+        preferred = [name for name in ("Selection A", "Selection B") if name in metrics]
+        ordered = preferred + [name for name in metrics if name not in preferred]
+        if not ordered:
+            ordered = ["Selection A", "Selection B"]
 
-        self.axes.clear()
-        self.axes.set_xlabel("X (mapping or index)")
-        self.axes.set_ylabel(target)
-        self.axes.plot(x_values, y_values, "o-")
-        self.axes.grid(True, linestyle="--", alpha=0.4)
-        self.canvas.draw_idle()
+        if hasattr(self, "plot_panel"):
+            self.plot_panel.set_metrics(ordered)
 
 
 def main() -> None:

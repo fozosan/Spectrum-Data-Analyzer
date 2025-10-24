@@ -35,7 +35,7 @@ def session_to_dict(session: AnalysisSession) -> Dict[str, Any]:
         "x_mapping": {k: float(v) for k, v in dict(x_mapping).items()},
         "data_fit": data_fit,
         "literature_fit": literature_fit,
-        "plot_config": plot_config,
+        "plot_config": plot_config,  # Tk/Qt share this persisted config
         "intersections": [
             {"x": float(point[0]), "y": float(point[1])}
             for point in intersections
@@ -70,7 +70,7 @@ def session_from_dict(data: Dict[str, Any]) -> AnalysisSession:
 
     sess.data_fit = data.get("data_fit") or None
     sess.literature_fit = data.get("literature_fit") or None
-    sess.plot_config = data.get("plot_config") or None
+    sess.plot_config = data.get("plot_config") or {}
 
     intersections = data.get("intersections", []) or []
     points: list[tuple[float, float]] = []
@@ -89,7 +89,7 @@ def session_from_dict(data: Dict[str, Any]) -> AnalysisSession:
                 continue
     sess.intersections = points
 
-    sel_state = data.get("selection_state")
+    sel_state = data.get("selection_state")  # let Tk/Qt restore their selection panel state
     if isinstance(sel_state, dict):
         sess.selection_state = sel_state
     return sess
