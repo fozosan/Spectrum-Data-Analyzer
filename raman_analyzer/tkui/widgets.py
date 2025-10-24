@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 
 class ScrollFrame(ttk.Frame):
@@ -117,10 +117,16 @@ class SelectionPanel(ttk.Frame):
         self,
         master: tk.Misc,
         *,
-        on_metrics_updated: Optional[Callable[[pd.DataFrame, pd.DataFrame], None]] = None,
+        session: Any | None = None,
+        on_metrics: Optional[
+            Callable[[str, pd.DataFrame, str, pd.DataFrame], None]
+        ] = None,
+        on_autopopulate: Optional[Callable[[str, int, int, str], None]] = None,
     ) -> None:
         super().__init__(master)
-        self.on_metrics_updated = on_metrics_updated
+        self.session = session  # for API parity; not used directly here
+        self._cb_metrics = on_metrics
+        self._cb_autopop = on_autopopulate
         self.file_to_tag: Dict[str, str] = {}
 
         # picks[bucket][component][file] -> List[(row, col, value)]
@@ -131,17 +137,18 @@ class SelectionPanel(ttk.Frame):
 
         self._mode = tk.StringVar(value="Single")
         self._aggregator = tk.StringVar(value="Mean")
-        self._armed = tk.StringVar(value="A.single")
+        self._armed: str = "A.single"
+        self._armed_var = tk.StringVar(value=self._armed)
 
         self._build_controls()
         self._mode.trace_add("write", lambda *_args: self._on_mode_changed())
-        self._aggregator.trace_add("write", lambda *_args: self._recompute_and_emit())
+        self._aggregator.trace_add("write", lambda *_args: self._refresh_tables_and_emit())
+        self._armed_var.trace_add("write", lambda *_: self._set_armed(self._armed_var.get()))
 
     # ------------------------------------------------------------------ public API
     def set_context(self, file_to_tag: Dict[str, str]) -> None:
         self.file_to_tag = dict(file_to_tag or {})
-        self._refresh_tables()
-        self._recompute_and_emit()
+        self._refresh_tables_and_emit()
 
     def add_pick(
         self,
@@ -153,14 +160,13 @@ class SelectionPanel(ttk.Frame):
         target: Optional[str] = None,
         tag: Optional[str] = None,
     ) -> None:
-        key = target or self._armed.get()
+        key = target or self._armed
         bucket, component = key.split(".")
         picks = self._picks[bucket][component].setdefault(file_id, [])
         picks.append((int(row1), int(col1), float(value)))
         if tag is not None:
             self.file_to_tag[str(file_id)] = str(tag)
-        self._refresh_tables()
-        self._recompute_and_emit()
+        self._refresh_tables_and_emit()
 
     def get_mode(self) -> str:
         return self._mode.get()
@@ -188,32 +194,48 @@ class SelectionPanel(ttk.Frame):
             state="readonly",
         ).pack(side="top", fill="x")
 
-        armed_frame = ttk.LabelFrame(
+        self.targets_box = ttk.LabelFrame(
             self, text="Armed target — double-click a value in the left grid to add"
         )
-        armed_frame.pack(side="top", fill="x", padx=6, pady=6)
+        self.targets_box.pack(side="top", fill="x", padx=6, pady=6)
 
-        radio_container = ttk.Frame(armed_frame)
-        radio_container.pack(side="top", fill="x", padx=6, pady=6)
-        self._radios: Dict[str, ttk.Radiobutton] = {}
+        self.targets_panel = ttk.Frame(self.targets_box)
+        self.targets_panel.pack(side="top", fill="x", padx=6, pady=6)
+        self._target_radios: List[ttk.Radiobutton] = []
 
-        for key, label in [
-            ("A.single", "A (single)"),
-            ("B.single", "B (single)"),
-            ("A.num", "A (numerator)"),
-            ("A.den", "A (denominator)"),
-            ("B.num", "B (numerator)"),
-            ("B.den", "B (denominator)"),
-            ("A.left", "A (left)"),
-            ("A.right", "A (right)"),
-            ("B.left", "B (left)"),
-            ("B.right", "B (right)"),
-        ]:
-            rb = ttk.Radiobutton(radio_container, text=label, value=key, variable=self._armed)
-            rb.pack(side="top", anchor="w")
-            self._radios[key] = rb
+        self._help_label = ttk.Label(
+            self.targets_box,
+            text="Double-click a value in the data table to add it to the armed target.",
+            wraplength=320,
+            justify="left",
+        )
+        self._help_label.pack(side="top", fill="x", padx=6, pady=(0, 4))
 
-        self._update_radio_visibility("Single")
+        autopop_box = ttk.LabelFrame(self, text="Auto-populate from grid")
+        autopop_box.pack(side="top", fill="x", padx=6, pady=6)
+
+        form = ttk.Frame(autopop_box)
+        form.pack(side="top", fill="x", padx=6, pady=4)
+        ttk.Label(form, text="Row").grid(row=0, column=0, sticky="w")
+        self.row_var = tk.StringVar(value="1")
+        ttk.Entry(form, textvariable=self.row_var, width=6).grid(row=0, column=1, padx=(4, 12))
+        ttk.Label(form, text="Column").grid(row=0, column=2, sticky="w")
+        self.col_var = tk.StringVar(value="1")
+        ttk.Entry(form, textvariable=self.col_var, width=6).grid(row=0, column=3, padx=(4, 12))
+        ttk.Label(form, text="Scope").grid(row=0, column=4, sticky="w")
+        self.scope_var = tk.StringVar(value="Selected")
+        ttk.Combobox(
+            form,
+            textvariable=self.scope_var,
+            values=["Selected", "All"],
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=5, padx=(4, 0))
+        ttk.Button(autopop_box, text="Auto-populate", command=self._on_autopop).pack(
+            side="top", anchor="w", padx=6, pady=(0, 6)
+        )
+
+        self._rebuild_radios()
 
         self.tree_a = ttk.Treeview(
             ttk.LabelFrame(self, text="Selection A — Picks"),
@@ -277,31 +299,99 @@ class SelectionPanel(ttk.Frame):
 
     # ------------------------------------------------------------------ actions
     def _on_mode_changed(self) -> None:
-        self._update_radio_visibility(self._mode.get())
-        self._refresh_tables()
-        self._recompute_and_emit()
+        self._rebuild_radios()
+        self._refresh_tables_and_emit()
 
-    def _update_radio_visibility(self, mode: str) -> None:
-        visible = {
-            "Single": {"A.single", "B.single"},
-            "Ratio": {"A.num", "A.den", "B.num", "B.den"},
-            "Difference": {"A.left", "A.right", "B.left", "B.right"},
-        }[mode]
+    def _rebuild_radios(self) -> None:
+        for widget in list(self.targets_panel.winfo_children()):
+            widget.destroy()
+        self._target_radios = []
 
-        for key, radio in self._radios.items():
-            if key in visible:
-                radio.pack(side="top", anchor="w")
-            else:
-                radio.pack_forget()
+        mode = self._mode.get()
+        if mode == "Single":
+            keys = [("A", "single", "A (single)"), ("B", "single", "B (single)")]
+        elif mode == "Ratio":
+            keys = [
+                ("A", "num", "A (numerator)"),
+                ("A", "den", "A (denominator)"),
+                ("B", "num", "B (numerator)"),
+                ("B", "den", "B (denominator)"),
+            ]
+        else:  # Difference
+            keys = [
+                ("A", "left", "A (left)"),
+                ("A", "right", "A (right)"),
+                ("B", "left", "B (left)"),
+                ("B", "right", "B (right)"),
+            ]
 
-        if self._armed.get() not in visible:
-            self._armed.set(next(iter(visible)))
+        valid = [f"{bucket}.{component}" for bucket, component, _label in keys]
+        if self._armed not in valid:
+            self._armed = valid[0]
+        if self._armed_var.get() != self._armed:
+            self._armed_var.set(self._armed)
+
+        for bucket, component, label in keys:
+            key = f"{bucket}.{component}"
+            radio = ttk.Radiobutton(
+                self.targets_panel,
+                text=label,
+                value=key,
+                variable=self._armed_var,
+                command=lambda k=key: self._set_armed(k),
+            )
+            radio.pack(side="top", anchor="w", pady=1)
+            self._target_radios.append(radio)
+
+        self._update_help()
+
+    def _set_armed(self, key: str) -> None:
+        if not key:
+            return
+        self._armed = key
+        if self._armed_var.get() != key:
+            self._armed_var.set(key)
+        self._update_help()
+
+    def _update_help(self) -> None:
+        mode = self._mode.get()
+        if mode == "Single":
+            tip = "Single mode averages all picks assigned to Selection A or B."
+        elif mode == "Ratio":
+            tip = (
+                "Ratio mode divides the aggregated numerator picks by the denominator picks"
+            )
+        else:
+            tip = (
+                "Difference mode subtracts the aggregated right picks from the left picks"
+            )
+        self._help_label.configure(
+            text=f"{tip}\nCurrently armed target: {self._armed.replace('.', ' → ')}"
+        )
 
     def _clear_bucket(self, bucket: str) -> None:
         for component in ("single", "num", "den", "left", "right"):
             self._picks[bucket][component] = {}
-        self._refresh_tables()
-        self._recompute_and_emit()
+        self._refresh_tables_and_emit()
+
+    def _on_autopop(self) -> None:
+        if not callable(self._cb_autopop):
+            return
+
+        try:
+            row = int(self.row_var.get())
+            col = int(self.col_var.get())
+        except (TypeError, ValueError):
+            messagebox.showwarning(
+                "Auto-populate", "Row and Column must be integer positions."
+            )
+            return
+
+        scope = self.scope_var.get() if hasattr(self, "scope_var") else "Selected"
+        if scope not in {"Selected", "All"}:
+            scope = "Selected"
+
+        self._cb_autopop(self._armed, row, col, scope)
 
     def _remove_selected(self, bucket: str) -> None:
         tree = self.tree_a if bucket == "A" else self.tree_b
@@ -330,14 +420,9 @@ class SelectionPanel(ttk.Frame):
             if not entries:
                 self._picks[bucket][component].pop(file_id, None)
 
-        self._refresh_tables()
-        self._recompute_and_emit()
+        self._refresh_tables_and_emit()
 
     # ------------------------------------------------------------------ table data
-    def _refresh_tables(self) -> None:
-        self._populate_pick_tree(self.tree_a, "A")
-        self._populate_pick_tree(self.tree_b, "B")
-
     def _populate_pick_tree(self, tree: ttk.Treeview, bucket: str) -> None:
         for item_id in tree.get_children():
             tree.delete(item_id)
@@ -401,7 +486,7 @@ class SelectionPanel(ttk.Frame):
 
         return pd.DataFrame(results, columns=["file", "value"])
 
-    def _fill_preview(self, tree: ttk.Treeview, dataframe: pd.DataFrame) -> None:
+    def _refresh_preview(self, tree: ttk.Treeview, dataframe: pd.DataFrame) -> None:
         for item_id in tree.get_children():
             tree.delete(item_id)
 
@@ -414,13 +499,21 @@ class SelectionPanel(ttk.Frame):
             display = "" if pd.isna(value) else f"{float(value):.6g}"
             tree.insert("", "end", values=(file_id, display))
 
-    def _recompute_and_emit(self) -> None:
+    def _refresh_tables_and_emit(self) -> None:
+        self._populate_pick_tree(self.tree_a, "A")
+        self._populate_pick_tree(self.tree_b, "B")
+
         a_df = self._compute_bucket("A")
         b_df = self._compute_bucket("B")
-        self._fill_preview(self.preview_a, a_df)
-        self._fill_preview(self.preview_b, b_df)
-        if self.on_metrics_updated is not None:
-            self.on_metrics_updated(a_df, b_df)
+        self._refresh_preview(self.preview_a, a_df)
+        self._refresh_preview(self.preview_b, b_df)
+
+        if callable(self._cb_metrics):
+            try:
+                self._cb_metrics("Selection A", a_df, "Selection B", b_df)
+            except Exception:
+                # UI callbacks should never crash the panel; log elsewhere if needed
+                pass
 
 
 __all__ = ["DataTable", "ScrollFrame", "SelectionPanel"]
