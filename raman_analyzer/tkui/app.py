@@ -310,25 +310,25 @@ class TkRamanApp:
             )
 
     def _refresh_plot_metrics(self) -> None:
-        """Update the plot metric combobox from the session results table."""
+        """Synchronize PlotPanel's X/Y choices with current session metrics/results."""
 
-        df = getattr(self.session, "results_df", pd.DataFrame())
-        if df is None or df.empty:
-            metrics: List[str] = []
-        else:
-            metrics = [
-                str(col)
-                for col in df.columns
-                if col not in {"file", "tag"}
-            ]
-
-        preferred = [name for name in ("Selection A", "Selection B") if name in metrics]
-        ordered = preferred + [name for name in metrics if name not in preferred]
-        if not ordered:
-            ordered = ["Selection A", "Selection B"]
+        try:
+            if hasattr(self.session, "list_metrics"):
+                names = list(self.session.list_metrics())
+            elif hasattr(self.session, "metrics"):
+                names = list(getattr(self.session, "metrics", {}).keys())
+            else:
+                df = getattr(self.session, "results_df", None)
+                names = [
+                    str(col)
+                    for col in getattr(df, "columns", [])
+                    if col not in {"file", "tag"}
+                ] if df is not None else []
+        except Exception:
+            names = []
 
         if hasattr(self, "plot_panel"):
-            self.plot_panel.set_metrics_for_xy(ordered)
+            self.plot_panel.set_metrics_for_xy(names)
 
 
 def main() -> None:
