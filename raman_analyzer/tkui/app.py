@@ -9,7 +9,7 @@ import pandas as pd
 
 from raman_analyzer.models.session import AnalysisSession
 from raman_analyzer.tkui.plot_panel import PlotPanel
-from raman_analyzer.tkui.widgets import DataTable, ScrollFrame, SelectionPanel
+from raman_analyzer.tkui.widgets import DataTable, FileList, ScrollFrame, SelectionPanel
 
 
 class TkRamanApp:
@@ -46,9 +46,14 @@ class TkRamanApp:
         left_split.pack(fill="both", expand=True)
 
         files_box = ttk.LabelFrame(left_split, text="Files")
-        self.files_list = tk.Listbox(files_box, exportselection=False)
-        self.files_list.pack(fill="both", expand=True)
-        self.files_list.bind("<<ListboxSelect>>", self._on_file_selected)
+        self.file_list = FileList(
+            files_box,
+            session=self.session,
+            on_tag_changed=self._on_file_tag_changed,
+            on_x_changed=self._on_file_x_changed,
+            on_selection_changed=self._on_file_selection_changed,
+        )
+        self.file_list.pack(fill="both", expand=True)
         left_split.add(files_box, weight=1)
 
         table_box = ttk.LabelFrame(left_split, text="Data")
@@ -74,12 +79,13 @@ class TkRamanApp:
         )
         self.selection_panel.pack(side="top", fill="both", expand=True)
 
+        # Plot panel: controls live in the scrollable area; canvas sits in the lower pane.
         self.plot_panel = PlotPanel(
-            right_split,
+            right_container,
             session=self.session,
             controls_parent=controls,
         )
-        right_split.add(self.plot_panel, weight=2)
+        right_split.add(self.plot_panel, weight=4)
 
         self.root.geometry("1280x800")
         self.root.minsize(900, 600)
@@ -121,13 +127,12 @@ class TkRamanApp:
             if "file" in merged.columns
             else []
         )
-        self.files_list.delete(0, "end")
-        for file_id in files:
-            self.files_list.insert("end", file_id)
+        self.file_list.set_files(files)
 
         if files:
-            self.files_list.select_set(0)
-            self._on_file_selected(None)
+            self.file_list.select_file(files[0])
+        else:
+            self._on_file_selection_changed([])
 
         self.selection_panel.set_context(self.session.file_to_tag)
         self._refresh_plot_metrics()
@@ -181,20 +186,21 @@ class TkRamanApp:
             self.session.update_x_mapping(mapping)
 
         self.selection_panel.set_context(self.session.file_to_tag)
+        self.file_list.refresh()
         messagebox.showinfo(
             "Import Tags/X CSV",
             f"Imported {tags_applied} tags and {len(mapping)} X values.",
         )
 
     # ------------------------------------------------------------------ callbacks
-    def _on_file_selected(self, _event: Optional[tk.Event]) -> None:
-        selection = self.files_list.curselection()
-        if not selection:
+    def _on_file_selection_changed(self, files: List[str]) -> None:
+        if not files:
             self.current_file = None
             self.data_table.set_dataframe(pd.DataFrame())
+            self.selection_panel.set_context(self.session.file_to_tag)
             return
 
-        self.current_file = self.files_list.get(selection[0])
+        self.current_file = files[0]
         table = self.session.get_raw_table(self.current_file)
         if table is not None:
             self.data_table.set_dataframe(table)
@@ -204,11 +210,19 @@ class TkRamanApp:
         raw = self.session.raw_df
         if raw is None or raw.empty or "file" not in raw.columns:
             self.data_table.set_dataframe(pd.DataFrame())
+            self.selection_panel.set_context(self.session.file_to_tag)
             return
 
         subset = raw[raw["file"].astype(str) == str(self.current_file)]
         self.data_table.set_dataframe(subset)
         self.selection_panel.set_context(self.session.file_to_tag)
+
+    def _on_file_tag_changed(self, _file_id: str, _tag: str) -> None:
+        self.selection_panel.set_context(self.session.file_to_tag)
+        self._refresh_plot_metrics()
+
+    def _on_file_x_changed(self, _file_id: str, _value: Optional[float]) -> None:
+        self._refresh_plot_metrics()
 
     def _on_cell_double_click(self, row1: int, col1: int, value: Any) -> None:
         if not self.current_file:
@@ -265,8 +279,7 @@ class TkRamanApp:
             else:
                 files = []
         else:
-            selection = self.files_list.curselection()
-            files = [self.files_list.get(i) for i in selection]
+            files = self.file_list.get_selected_files()
             if not files and self.current_file:
                 files = [self.current_file]
 
@@ -297,25 +310,25 @@ class TkRamanApp:
             )
 
     def _refresh_plot_metrics(self) -> None:
-        """Update the plot metric combobox from the session results table."""
+        """Synchronize PlotPanel's X/Y choices with current session metrics/results."""
 
-        df = getattr(self.session, "results_df", pd.DataFrame())
-        if df is None or df.empty:
-            metrics: List[str] = []
-        else:
-            metrics = [
-                str(col)
-                for col in df.columns
-                if col not in {"file", "tag"}
-            ]
-
-        preferred = [name for name in ("Selection A", "Selection B") if name in metrics]
-        ordered = preferred + [name for name in metrics if name not in preferred]
-        if not ordered:
-            ordered = ["Selection A", "Selection B"]
+        try:
+            if hasattr(self.session, "list_metrics"):
+                names = list(self.session.list_metrics())
+            elif hasattr(self.session, "metrics"):
+                names = list(getattr(self.session, "metrics", {}).keys())
+            else:
+                df = getattr(self.session, "results_df", None)
+                names = [
+                    str(col)
+                    for col in getattr(df, "columns", [])
+                    if col not in {"file", "tag"}
+                ] if df is not None else []
+        except Exception:
+            names = []
 
         if hasattr(self, "plot_panel"):
-            self.plot_panel.set_metrics_for_xy(ordered)
+            self.plot_panel.set_metrics_for_xy(names)
 
 
 def main() -> None:
