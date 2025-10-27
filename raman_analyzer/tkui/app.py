@@ -79,12 +79,13 @@ class TkRamanApp:
         )
         self.selection_panel.pack(side="top", fill="both", expand=True)
 
+        # Plot panel: controls live in the scrollable area; canvas sits in the lower pane.
         self.plot_panel = PlotPanel(
-            right_split,
+            right_container,
             session=self.session,
             controls_parent=controls,
         )
-        right_split.add(self.plot_panel, weight=2)
+        right_split.add(self.plot_panel, weight=4)
 
         self.root.geometry("1280x800")
         self.root.minsize(900, 600)
