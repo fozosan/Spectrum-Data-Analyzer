@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import tkinter as tk
@@ -31,11 +31,61 @@ class ScrollFrame(ttk.Frame):
         self.inner.bind("<Configure>", self._on_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
 
+        self._wheel_bound = False
+        for widget in (self, self.canvas, self.inner):
+            widget.bind("<Enter>", self._activate_wheel, add="+")
+            widget.bind("<Leave>", self._deactivate_wheel, add="+")
+
     def _on_configure(self, _event: tk.Event) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_canvas_configure(self, event: tk.Event) -> None:
         self.canvas.itemconfigure(self.canvas_window, width=event.width)
+
+    def _on_mousewheel(self, event: tk.Event) -> str | None:
+        delta = 0.0
+        if getattr(event, "num", None) in (4, 5):
+            delta = -1.0 if event.num == 5 else 1.0
+        elif getattr(event, "delta", 0):
+            delta = -event.delta / 120.0
+        if delta:
+            steps = math.ceil(delta) if delta > 0 else math.floor(delta)
+            if steps == 0:
+                steps = 1 if delta > 0 else -1
+            self.canvas.yview_scroll(int(steps), "units")
+        return "break"
+
+    def _activate_wheel(self, _event: tk.Event | None = None) -> None:
+        if self._wheel_bound:
+            return
+        self._wheel_bound = True
+        self.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
+        self.bind_all("<Button-4>", self._on_mousewheel, add="+")
+        self.bind_all("<Button-5>", self._on_mousewheel, add="+")
+
+    def _deactivate_wheel(self, event: tk.Event | None = None) -> None:
+        if not self._wheel_bound:
+            return
+
+        if event is not None:
+            try:
+                widget = self.winfo_containing(event.x_root, event.y_root)
+            except Exception:
+                widget = None
+            if widget is not None and self._owns_widget(widget):
+                return
+
+        self._wheel_bound = False
+        self.unbind_all("<MouseWheel>")
+        self.unbind_all("<Button-4>")
+        self.unbind_all("<Button-5>")
+
+    def _owns_widget(self, widget: tk.Misc) -> bool:
+        if widget is None:
+            return False
+        widget_path = str(widget)
+        inner_path = str(self.inner)
+        return widget is self or widget is self.canvas or widget is self.inner or widget_path.startswith(f"{inner_path}.")
 
 
 class DataTable(ttk.Frame):
@@ -61,6 +111,7 @@ class DataTable(ttk.Frame):
         self.hscroll.pack(side="bottom", fill="x")
 
         self.tree.bind("<Double-1>", self._handle_double_click)
+        self._highlight_after: Optional[str] = None
 
     def set_dataframe(self, dataframe: pd.DataFrame | None) -> None:
         self._df = dataframe.copy() if dataframe is not None else pd.DataFrame()
@@ -73,7 +124,7 @@ class DataTable(ttk.Frame):
         self.tree["columns"] = columns
         for column in columns:
             self.tree.heading(column, text=column)
-            self.tree.column(column, width=110, stretch=True)
+            self.tree.column(column, width=110, stretch=False)
 
         for item_id in self.tree.get_children():
             self.tree.delete(item_id)
@@ -81,6 +132,8 @@ class DataTable(ttk.Frame):
         for _, row in self._df.iterrows():
             values = [row.get(column, "") for column in self._df.columns]
             self.tree.insert("", "end", values=values)
+
+        self._clear_highlight()
 
     # ------------------------------------------------------------------ events
     def _handle_double_click(self, event: tk.Event) -> None:
@@ -98,8 +151,222 @@ class DataTable(ttk.Frame):
         except Exception:
             return
 
+        self._draw_highlight(item_id)
+
         value = self._df.iat[row_index, column_index]
         self._on_cell_double_click(row_index + 1, column_index + 1, value)
+
+    # ----------------------------------------------------------------- helpers
+    def _draw_highlight(self, item_id: str) -> None:
+        if self._highlight_after is not None:
+            try:
+                self.after_cancel(self._highlight_after)
+            except Exception:
+                pass
+        self.tree.selection_set(item_id)
+        self._highlight_after = self.after(600, lambda: self._clear_highlight(cancel_timer=False))
+
+    def _clear_highlight(self, *, cancel_timer: bool = True) -> None:
+        if cancel_timer and self._highlight_after is not None:
+            try:
+                self.after_cancel(self._highlight_after)
+            except Exception:
+                pass
+        self._highlight_after = None
+        selection = self.tree.selection()
+        if selection:
+            for selected in selection:
+                self.tree.selection_remove(selected)
+
+
+class FileList(ttk.Frame):
+    """Tree-based file list with editable Tag and X mapping columns."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        session: Any,
+        on_tag_changed: Optional[Callable[[str, str], None]] = None,
+        on_x_changed: Optional[Callable[[str, Optional[float]], None]] = None,
+        on_selection_changed: Optional[Callable[[List[str]], None]] = None,
+    ) -> None:
+        super().__init__(master)
+        self.session = session
+        self._on_tag_changed = on_tag_changed
+        self._on_x_changed = on_x_changed
+        self._on_selection_changed = on_selection_changed
+        self._files: List[str] = []
+        self._editor: Optional[ttk.Entry] = None
+
+        columns = ("file", "tag", "x")
+        self.tree = ttk.Treeview(
+            self,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=10,
+        )
+        self.tree.heading("file", text="File")
+        self.tree.heading("tag", text="Tag (Sample)")
+        self.tree.heading("x", text="X mapping")
+        self.tree.column("file", width=260, anchor="w", stretch=True)
+        self.tree.column("tag", width=140, anchor="center", stretch=False)
+        self.tree.column("x", width=110, anchor="e", stretch=False)
+
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._emit_selection)
+        self.tree.bind("<Double-1>", self._begin_edit)
+
+    # ------------------------------------------------------------------ public API
+    def set_files(self, files: Sequence[str]) -> None:
+        """Populate the file list and preserve selection when possible."""
+
+        files = [str(f) for f in files]
+        previous = self.get_selected_files()
+        self._files = files
+        self.tree.delete(*self.tree.get_children())
+        mapping = dict(getattr(self.session, "x_mapping", {}) or {})
+        tags = dict(getattr(self.session, "file_to_tag", {}) or {})
+        for file_id in self._files:
+            tag = tags.get(file_id, "")
+            x_val = self._format_x(mapping.get(file_id))
+            self.tree.insert("", "end", iid=file_id, values=(file_id, tag, x_val))
+
+        for file_id in previous:
+            if self.tree.exists(file_id):
+                self.tree.selection_set(file_id)
+                self.tree.see(file_id)
+                break
+
+    def refresh(self) -> None:
+        """Refresh displayed Tag/X values from the session."""
+
+        mapping = dict(getattr(self.session, "x_mapping", {}) or {})
+        tags = dict(getattr(self.session, "file_to_tag", {}) or {})
+        for file_id in self._files:
+            if not self.tree.exists(file_id):
+                continue
+            tag = tags.get(file_id, "")
+            x_val = self._format_x(mapping.get(file_id))
+            self.tree.item(file_id, values=(file_id, tag, x_val))
+
+    def get_selected_files(self) -> List[str]:
+        selection: List[str] = []
+        for item_id in self.tree.selection():
+            file_id = self.tree.set(item_id, "file")
+            if file_id:
+                selection.append(file_id)
+        return selection
+
+    def select_file(self, file_id: str) -> None:
+        if not file_id or not self.tree.exists(file_id):
+            return
+        self.tree.selection_set(file_id)
+        self.tree.focus(file_id)
+        self.tree.see(file_id)
+        self._emit_selection(None)
+
+    # ------------------------------------------------------------------ internal helpers
+    def _emit_selection(self, _event: Optional[tk.Event]) -> None:
+        if callable(self._on_selection_changed):
+            try:
+                self._on_selection_changed(self.get_selected_files())
+            except Exception:
+                pass
+
+    def _begin_edit(self, event: tk.Event) -> None:
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        row_id = self.tree.identify_row(event.y)
+        col_id = self.tree.identify_column(event.x)
+        if not row_id or col_id == "#1":
+            return
+
+        if self._editor is not None:
+            self._editor.destroy()
+
+        bbox = self.tree.bbox(row_id, col_id)
+        if not bbox:
+            return
+        x_pos, y_pos, width, height = bbox
+        current_value = self.tree.set(row_id, col_id)
+        editor = ttk.Entry(self.tree)
+        editor.insert(0, current_value)
+        editor.select_range(0, "end")
+        editor.focus_set()
+        editor.place(x=x_pos, y=y_pos, width=width, height=height)
+        self._editor = editor
+
+        def _commit(*_args: object) -> None:
+            if self._editor is None:
+                return
+            new_value = self._editor.get().strip()
+            self._editor.destroy()
+            self._editor = None
+            self._apply_edit(row_id, col_id, new_value)
+
+        def _cancel(*_args: object) -> None:
+            if self._editor is not None:
+                self._editor.destroy()
+                self._editor = None
+
+        editor.bind("<Return>", _commit)
+        editor.bind("<FocusOut>", _commit)
+        editor.bind("<Escape>", _cancel)
+
+    def _apply_edit(self, row_id: str, col_id: str, new_value: str) -> None:
+        values = list(self.tree.item(row_id, "values"))
+        col_index = int(col_id[1:]) - 1
+        file_id = values[0]
+        if col_index == 1:
+            values[col_index] = new_value
+            self.tree.item(row_id, values=tuple(values))
+            self.session.set_tag(file_id, new_value)
+            if callable(self._on_tag_changed):
+                try:
+                    self._on_tag_changed(file_id, new_value)
+                except Exception:
+                    pass
+            return
+
+        if col_index == 2:
+            if new_value == "":
+                mapping = dict(getattr(self.session, "x_mapping", {}) or {})
+                if file_id in mapping:
+                    del mapping[file_id]
+                    self.session.update_x_mapping(mapping)
+                    if callable(self._on_x_changed):
+                        try:
+                            self._on_x_changed(file_id, None)
+                        except Exception:
+                            pass
+            else:
+                try:
+                    numeric = float(new_value)
+                except ValueError:
+                    messagebox.showerror("Invalid X", "X mapping must be numeric")
+                    self.refresh()
+                    return
+                mapping = dict(getattr(self.session, "x_mapping", {}) or {})
+                mapping[file_id] = numeric
+                self.session.update_x_mapping(mapping)
+                if callable(self._on_x_changed):
+                    try:
+                        self._on_x_changed(file_id, numeric)
+                    except Exception:
+                        pass
+            self.refresh()
+
+    @staticmethod
+    def _format_x(value: Optional[float]) -> str:
+        if value is None:
+            return ""
+        try:
+            return f"{float(value):g}"
+        except (TypeError, ValueError):
+            return ""
 
 
 def _aggregate(values: List[float], mode: str) -> Optional[float]:
@@ -516,4 +783,4 @@ class SelectionPanel(ttk.Frame):
                 pass
 
 
-__all__ = ["DataTable", "ScrollFrame", "SelectionPanel"]
+__all__ = ["DataTable", "FileList", "ScrollFrame", "SelectionPanel"]
