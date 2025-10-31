@@ -21,7 +21,7 @@ def session_to_dict(session: AnalysisSession) -> Dict[str, Any]:
     raw_df = getattr(session, "raw_df", pd.DataFrame())
     results_df = getattr(session, "results_df", pd.DataFrame())
     file_to_tag = dict(getattr(session, "file_to_tag", {}) or {})
-    x_mapping = getattr(session, "x_mapping", {}) or {}
+    ordering = dict(getattr(session, "ordering", {}) or {})
     data_fit = getattr(session, "data_fit", None)
     literature_fit = getattr(session, "literature_fit", None)
     intersections = getattr(session, "intersections", []) or []
@@ -32,7 +32,7 @@ def session_to_dict(session: AnalysisSession) -> Dict[str, Any]:
         "raw_df": _to_records(raw_df),
         "results_df": _to_records(results_df),
         "file_to_tag": file_to_tag,
-        "x_mapping": {k: float(v) for k, v in dict(x_mapping).items()},
+        "ordering": {k: float(v) for k, v in dict(ordering).items()},
         "data_fit": data_fit,
         "literature_fit": literature_fit,
         "plot_config": plot_config,  # Tk/Qt share this persisted config
@@ -60,9 +60,15 @@ def session_from_dict(data: Dict[str, Any]) -> AnalysisSession:
     for file_id, tag in (data.get("file_to_tag", {}) or {}).items():
         sess.set_tag(str(file_id), str(tag))
 
-    x_mapping = data.get("x_mapping", {}) or {}
-    if x_mapping:
-        sess.update_x_mapping({str(k): float(v) for k, v in x_mapping.items()})
+    ordering_map = data.get("ordering")
+    if ordering_map is None:
+        if data.get("x_mapping"):
+            raise ValueError(
+                "Session payload is missing 'ordering'. Use tools/migrate_session_ordering.py to upgrade."
+            )
+        ordering_map = {}
+    if ordering_map:
+        sess.update_ordering({str(k): float(v) for k, v in dict(ordering_map).items()})
 
     results_df = pd.DataFrame(data.get("results_df", []))
     if not results_df.empty:
@@ -71,6 +77,9 @@ def session_from_dict(data: Dict[str, Any]) -> AnalysisSession:
     sess.data_fit = data.get("data_fit") or None
     sess.literature_fit = data.get("literature_fit") or None
     sess.plot_config = data.get("plot_config") or {}
+    sel = data.get("selection_state")
+    if isinstance(sel, dict):
+        sess.selection_state = sel
 
     intersections = data.get("intersections", []) or []
     points: list[tuple[float, float]] = []
@@ -89,9 +98,6 @@ def session_from_dict(data: Dict[str, Any]) -> AnalysisSession:
                 continue
     sess.intersections = points
 
-    sel_state = data.get("selection_state")  # let Tk/Qt restore their selection panel state
-    if isinstance(sel_state, dict):
-        sess.selection_state = sel_state
     return sess
 
 

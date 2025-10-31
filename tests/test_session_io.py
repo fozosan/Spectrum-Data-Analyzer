@@ -19,7 +19,7 @@ def test_session_roundtrip_dict() -> None:
     session.set_raw_data(df)
     session.set_tag("a", "T1")
     session.set_tag("b", "T2")
-    session.update_x_mapping({"a": 1.0, "b": 2.0})
+    session.update_ordering({"a": 1.0, "b": 2.0})
     metric_df = pd.DataFrame({"file": ["a", "b"], "value": [15.0, 9.0]})
     session.update_metric("area_sum", metric_df)
     session.data_fit = {"model": "linear", "coeffs": (1.0, 2.0), "r2": 0.99}
@@ -46,8 +46,23 @@ def test_session_roundtrip_dict() -> None:
         check_dtype=False,
     )
     assert restored.file_to_tag == session.file_to_tag
-    assert restored.x_mapping == session.x_mapping
+    assert restored.ordering == session.ordering
     assert restored.data_fit == session.data_fit
     assert restored.literature_fit == session.literature_fit
     assert restored.intersections == session.intersections
     assert restored.plot_config == session.plot_config
+
+
+def test_session_from_dict_requires_ordering() -> None:
+    payload = {
+        "version": 1,
+        "file_to_tag": {"a": "T1"},
+        "x_mapping": {"a": 1.0},
+    }
+
+    try:
+        session_from_dict(payload)
+    except ValueError as exc:
+        assert "migrate_session_ordering" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError when ordering is missing")

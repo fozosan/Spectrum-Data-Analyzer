@@ -20,8 +20,8 @@ class AnalysisSession:
         Mapping of file identifiers to user-assigned group tags.
     results_df:
         Wide-format table containing per-file metric results.
-    x_mapping:
-        Optional mapping of files to user-provided numeric x-values.
+    ordering:
+        Optional mapping of files to user-provided ordering values.
     data_fit:
         Metadata for the fitted trendline of the current data.
     literature_fit:
@@ -35,7 +35,7 @@ class AnalysisSession:
     results_df: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=["file", "tag"])
     )
-    x_mapping: Optional[Dict[str, float]] = None
+    ordering: Dict[str, float] = field(default_factory=dict)
     data_fit: Optional[dict] = None
     literature_fit: Optional[dict] = None
     intersections: List[tuple[float, float]] = field(default_factory=list)
@@ -134,10 +134,15 @@ class AnalysisSession:
         values_df = values_df.rename(columns={"value": metric_name})
         self.results_df = self.results_df.merge(values_df, on="file", how="left")
 
-    def update_x_mapping(self, mapping: Dict[str, float]) -> None:
-        """Assign a numeric mapping for files along the x-axis."""
+    def update_ordering(self, mapping: dict[str, float]) -> None:
+        """Replace the entire Ordering map."""
 
-        self.x_mapping = mapping
+        self.ordering = dict(mapping or {})
+
+    def update_x_mapping(self, *_args, **_kwargs):
+        raise NotImplementedError(
+            "update_x_mapping() was removed. Use update_ordering(mapping) and X='Ordering'."
+        )
 
     def invalidate_fits(self) -> None:
         """Clear cached fit data."""

@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from math import isfinite
 
 from raman_analyzer.analysis.grouping import compute_error_table
 from raman_analyzer.analysis.trendlines import (
@@ -41,18 +42,85 @@ class PlotPanel(ttk.Frame):
     ) -> None:
         super().__init__(master)
         self.session = session
+        self._pending_annotations: list[Tuple[np.ndarray, np.ndarray, str]] = []
+        self._last_group_stats: Optional[pd.DataFrame] = None
 
         # --------------------------- controls ---------------------------
         self.controls_container = ttk.Frame(controls_parent)
         self.controls_container.pack(side="top", fill="x", expand=True)
 
+        # -------------------- Literature Solve (Inverse) --------------------
+        inv_box = ttk.LabelFrame(self.controls_container, text="Literature Solve (Inverse)")
+        inv_box.pack(side="top", fill="x", padx=6, pady=(6, 6))
+
+        self.inv_model = tk.StringVar(value="Linear")
+        ttk.Label(inv_box, text="Model").grid(row=0, column=0, sticky="w")
+        self.inv_combo = ttk.Combobox(
+            inv_box,
+            textvariable=self.inv_model,
+            state="readonly",
+            width=16,
+            values=("Linear", "Quadratic", "Power"),
+        )
+        self.inv_combo.current(0)
+        self.inv_combo.grid(row=0, column=1, sticky="w", padx=4, pady=2)
+        self.inv_example = ttk.Label(inv_box, text="y = m·x + b", foreground="#555555")
+        self.inv_example.grid(row=0, column=2, sticky="w", padx=4)
+
+        self.inv_params_frame = ttk.Frame(inv_box)
+        self.inv_params_frame.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 2))
+        self.inv_param_vars: dict[str, tk.StringVar] = {}
+        self.inv_combo.bind("<<ComboboxSelected>>", lambda *_: self._refresh_inverse_params())
+        self._refresh_inverse_params()
+
+        ttk.Label(inv_box, text="Y metric").grid(row=2, column=0, sticky="w")
+        self.inv_y_metric = tk.StringVar(value="")
+        self.inv_y_combo = ttk.Combobox(inv_box, textvariable=self.inv_y_metric, state="readonly", width=24)
+        self.inv_y_combo.grid(row=2, column=1, sticky="w", padx=4, pady=2)
+
+        ttk.Label(inv_box, text="Source").grid(row=2, column=2, sticky="w")
+        self.inv_y_source = tk.StringVar(value="Points")
+        self.inv_source_combo = ttk.Combobox(
+            inv_box,
+            textvariable=self.inv_y_source,
+            state="readonly",
+            width=12,
+            values=("Points", "Group mean"),
+        )
+        self.inv_source_combo.current(0)
+        self.inv_source_combo.grid(row=2, column=3, sticky="w", padx=4, pady=2)
+
+        self.inv_plot_on_chart = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            inv_box,
+            text="Plot solutions on chart",
+            variable=self.inv_plot_on_chart,
+        ).grid(row=2, column=4, sticky="w", padx=6)
+        ttk.Button(inv_box, text="Solve", command=self._on_inverse_solve).grid(
+            row=2, column=5, padx=6, pady=2, sticky="w"
+        )
+
+        self.inverse_table = ttk.Treeview(inv_box, columns=("label", "y", "x1", "x2"), show="headings", height=6)
+        for column, width in (("label", 200), ("y", 110), ("x1", 120), ("x2", 120)):
+            self.inverse_table.heading(column, text=column.upper())
+            anchor = "center" if column != "label" else "w"
+            self.inverse_table.column(column, width=width, anchor=anchor)
+        self.inverse_table.grid(row=3, column=0, columnspan=6, sticky="ew", padx=2, pady=(2, 6))
+
+        inverse_export_row = ttk.Frame(inv_box)
+        inverse_export_row.grid(row=4, column=0, columnspan=6, sticky="w", pady=(0, 4))
+        ttk.Button(inverse_export_row, text="Export Solutions", command=self._export_inverse).pack(side="left", padx=2)
+        ttk.Button(inverse_export_row, text="Copy Solutions", command=self._copy_inverse).pack(side="left", padx=2)
+
         control_box = ttk.LabelFrame(self.controls_container, text="Plot")
         control_box.pack(side="top", fill="x", padx=6, pady=6)
 
-        self.x_field = tk.StringVar(value="X Mapping")
+        self.x_field = tk.StringVar(value="Ordering")
         self.y_field = tk.StringVar(value="")
         self.group_field = tk.StringVar(value="Tag")
         self.plot_type = tk.StringVar(value="Scatter")
+        # Distribution / error visualization mode. "Error bars" toggle kept for legacy state storage.
+        self.dist_mode = tk.StringVar(value="None")
         self.show_err = tk.BooleanVar(value=False)
         self.x_label_text = tk.StringVar(value="")
         self.y_label_text = tk.StringVar(value="")
@@ -60,10 +128,11 @@ class PlotPanel(ttk.Frame):
         self.auto_y = tk.BooleanVar(value=True)
         # Where to adjust defaults later: tweak auto range defaults, entry widths, or combo selections.
         self._derived_metrics: tuple[str, ...] = ()
+        self._last_series_for_xticks: list[tuple[float, str]] = []
 
         ttk.Label(control_box, text="X").grid(row=0, column=0, sticky="w")
         self.x_combo = ttk.Combobox(control_box, textvariable=self.x_field, state="readonly", width=18)
-        self.x_combo["values"] = ("X Mapping", "Tag (numeric)")
+        self.x_combo["values"] = ("Ordering", "Tag (numeric)")
         self.x_combo.current(0)
         self.x_combo.grid(row=0, column=1, padx=4, pady=2, sticky="w")
 
@@ -83,14 +152,16 @@ class PlotPanel(ttk.Frame):
         self.type_combo.current(0)
         self.type_combo.grid(row=0, column=7, padx=4, pady=2, sticky="w")
 
-        ttk.Checkbutton(control_box, text="Error bars", variable=self.show_err).grid(
-            row=0, column=8, padx=4, pady=2, sticky="w"
-        )
+        ttk.Label(control_box, text="Dist/Errors").grid(row=0, column=8, sticky="w")
+        self.dist_combo = ttk.Combobox(control_box, textvariable=self.dist_mode, state="readonly", width=12)
+        self.dist_combo["values"] = ("None", "Mean±SEM", "Mean±Std", "95% CI", "Box", "Violin")
+        self.dist_combo.current(0)
+        self.dist_combo.grid(row=0, column=9, padx=4, pady=2, sticky="w")
 
-        ttk.Button(control_box, text="Plot", command=self._on_plot).grid(row=0, column=9, padx=6, pady=2, sticky="e")
+        ttk.Button(control_box, text="Plot", command=self._on_plot).grid(row=0, column=10, padx=6, pady=2, sticky="e")
 
         label_row = ttk.Frame(control_box)
-        label_row.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(4, 0))
+        label_row.grid(row=1, column=0, columnspan=11, sticky="ew", pady=(4, 0))
         ttk.Label(label_row, text="X label").pack(side="left")
         self.x_label_entry = ttk.Entry(label_row, textvariable=self.x_label_text, width=20)
         self.x_label_entry.pack(side="left", padx=(4, 12))
@@ -99,7 +170,7 @@ class PlotPanel(ttk.Frame):
         self.y_label_entry.pack(side="left", padx=(4, 0))
 
         range_row = ttk.Frame(control_box)
-        range_row.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(4, 0))
+        range_row.grid(row=2, column=0, columnspan=11, sticky="ew", pady=(4, 0))
         ttk.Checkbutton(
             range_row,
             text="Auto X range",
@@ -130,10 +201,12 @@ class PlotPanel(ttk.Frame):
         self.y_max_entry.pack(side="left")
 
         export_row = ttk.Frame(control_box)
-        export_row.grid(row=3, column=0, columnspan=10, sticky="w", pady=(4, 0))
+        export_row.grid(row=3, column=0, columnspan=11, sticky="w", pady=(4, 0))
         ttk.Button(export_row, text="Export XY", command=self._export_xy).pack(side="left", padx=2)
+        ttk.Button(export_row, text="Copy XY", command=self._copy_xy).pack(side="left", padx=2)
         ttk.Button(export_row, text="Export Plot (PNG)", command=self._export_plot).pack(side="left", padx=2)
         ttk.Button(export_row, text="Export Group Stats", command=self._export_group_stats).pack(side="left", padx=2)
+        ttk.Button(export_row, text="Copy Stats", command=self._copy_group_stats).pack(side="left", padx=2)
 
         self._update_range_state()
 
@@ -158,20 +231,26 @@ class PlotPanel(ttk.Frame):
         )
 
         self.fit_summary = tk.Text(fit_box, height=4, width=60)
-        self.fit_summary.grid(row=1, column=0, columnspan=4, sticky="ew", padx=2, pady=2)
+        self.fit_summary.grid(row=1, column=0, columnspan=5, sticky="ew", padx=2, pady=2)
         self.fit_summary.configure(state="disabled")
 
         self.intersections_box = tk.Listbox(fit_box, height=5)
-        self.intersections_box.grid(row=2, column=0, columnspan=4, sticky="ew", padx=2, pady=(2, 6))
+        self.intersections_box.grid(row=2, column=0, columnspan=5, sticky="ew", padx=2, pady=(2, 6))
         ttk.Button(fit_box, text="Export Intersections", command=self._export_intersections).grid(
             row=3, column=0, padx=2, pady=2, sticky="w"
         )
         ttk.Button(fit_box, text="Export Residuals", command=self._export_residuals).grid(
             row=3, column=1, padx=2, pady=2, sticky="w"
         )
+        ttk.Button(fit_box, text="Copy Intersections", command=self._copy_intersections).grid(
+            row=3, column=2, padx=2, pady=2, sticky="w"
+        )
+        ttk.Button(fit_box, text="Copy Residuals", command=self._copy_residuals).grid(
+            row=3, column=3, padx=2, pady=2, sticky="w"
+        )
 
         literature_box = ttk.LabelFrame(fit_box, text="Literature Overlay")
-        literature_box.grid(row=4, column=0, columnspan=3, sticky="ew", padx=2, pady=(6, 2))
+        literature_box.grid(row=4, column=0, columnspan=5, sticky="ew", padx=2, pady=(6, 2))
         self.lit_model = tk.StringVar(value="Linear")
         ttk.Label(literature_box, text="Model").grid(row=0, column=0, sticky="w")
         self.lit_combo = ttk.Combobox(
@@ -205,6 +284,9 @@ class PlotPanel(ttk.Frame):
         self.plot_controller = PlotController(self.canvas, self.axes)
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True, padx=6, pady=(0, 6))
 
+        # keep an internal buffer for inverse annotations until a plot is drawn
+        # (buffer already initialized in __init__ above)
+
         # --------------------------- state ---------------------------
         self._current_xy = pd.DataFrame(columns=["file", "tag", "x", "y", "__group__"])
         self._fit: dict[str, object] | None = None
@@ -228,13 +310,14 @@ class PlotPanel(ttk.Frame):
 
         self._derived_metrics = tuple(derived)
 
-        choices: list[str] = ["X Mapping", "Tag (numeric)"]
+        choices: list[str] = ["Ordering", "Tag (numeric)"]
         choices.extend(metrics)
         choices.extend(derived)
 
         values = tuple(choices)
         self.x_combo["values"] = values
         self.y_combo["values"] = values
+        self.inv_y_combo["values"] = values
 
         def _ensure_selection(var: tk.StringVar, combo: ttk.Combobox, fallbacks: Sequence[str]) -> None:
             current = var.get()
@@ -251,7 +334,7 @@ class PlotPanel(ttk.Frame):
 
         x_fallbacks = [
             self.x_field.get(),
-            "X Mapping",
+            "Ordering",
             "Tag (numeric)",
             *metrics,
             *derived,
@@ -259,14 +342,23 @@ class PlotPanel(ttk.Frame):
         _ensure_selection(self.x_field, self.x_combo, x_fallbacks)
         x_choice = self.x_field.get()
 
-        preferred_y = [name for name in ["Selection A", "Selection B", *derived] if name in values]
+        preferred_y = [name for name in ("Selection A", "Selection B", *derived) if name in values]
         y_fallbacks = [
             self.y_field.get(),
             *preferred_y,
-            *[item for item in values if item not in {"X Mapping", "Tag (numeric)", x_choice}],
-            *[item for item in ("X Mapping", "Tag (numeric)") if item != x_choice],
+            *[item for item in values if item not in {"Ordering", "Tag (numeric)", x_choice}],
+            *[item for item in ("Ordering", "Tag (numeric)") if item != x_choice],
         ]
         _ensure_selection(self.y_field, self.y_combo, y_fallbacks)
+
+        inv_preferred = [name for name in ("Selection A", "Selection B", *derived) if name in values]
+        inv_fallbacks = [
+            self.inv_y_metric.get(),
+            *inv_preferred,
+            *[item for item in values if item not in {"Ordering", "Tag (numeric)"}],
+            *[item for item in ("Ordering", "Tag (numeric)")],
+        ]
+        _ensure_selection(self.inv_y_metric, self.inv_y_combo, inv_fallbacks)
 
     def set_metrics(self, names: Sequence[str]) -> None:
         self.set_metrics_for_xy(names)
@@ -304,8 +396,8 @@ class PlotPanel(ttk.Frame):
         return work
 
     def _resolve_axis(self, label: str, work: pd.DataFrame) -> pd.Series:
-        if label == "X Mapping":
-            mapping = dict(getattr(self.session, "x_mapping", {}) or {})
+        if label == "Ordering":
+            mapping = dict(getattr(self.session, "ordering", {}) or {})
             files = work["file"] if "file" in work.columns else pd.Series(index=work.index, dtype=object)
             return files.map(lambda fid: _safe_float(mapping.get(str(fid))))
         if label == "Tag (numeric)":
@@ -374,7 +466,7 @@ class PlotPanel(ttk.Frame):
             return
 
         def _axis_available(label: str) -> bool:
-            if label in {"X Mapping", "Tag (numeric)"}:
+            if label in {"Ordering", "Tag (numeric)"}:
                 return True
             if label in self._derived_metrics:
                 return {"Selection A", "Selection B"} <= set(df.columns)
@@ -394,9 +486,13 @@ class PlotPanel(ttk.Frame):
             return
 
         self._current_xy = work.copy()
+        self._last_group_stats = None
 
         x_axis_label = self.x_label_text.get().strip() or x_label
         y_axis_label = self.y_label_text.get().strip() or y_label
+        self._last_series_for_xticks = []
+        if x_label == "Ordering":
+            self._last_series_for_xticks = self._collect_ordering_ticks(work)
 
         try:
             x_limits = None if self.auto_x.get() else self._parse_range(self.x_min_entry.get(), self.x_max_entry.get(), "X")
@@ -417,17 +513,25 @@ class PlotPanel(ttk.Frame):
             legend_label = None if label in ("", "All") else label
             series_entries.append({"x": xs, "y": ys, "label": legend_label})
 
+        dist_mode = (self.dist_mode.get() or "None").strip()
+        valid_modes = {"None", "Mean±SEM", "Mean±Std", "95% CI", "Box", "Violin"}
+        if dist_mode not in valid_modes:
+            messagebox.showwarning("Plot", f"Unsupported distribution mode: {dist_mode}.")
+            dist_mode = "None"
+            self.dist_mode.set(dist_mode)
+
         error_entries: list[dict[str, object]] = []
-        if self.show_err.get():
-            renamed = work.rename(columns={"__group__": "tag"})
-            grouped = compute_error_table(renamed, mode="SEM")
-            if not grouped.empty:
-                for grp_label, grp_df in grouped.groupby("tag"):
+        if dist_mode in {"Mean±SEM", "Mean±Std", "95% CI"}:
+            grouped = self._compute_group_stats(work, mode=dist_mode)
+            if grouped is None or grouped.empty:
+                messagebox.showinfo("Plot", f"No grouped statistics available for {dist_mode}.")
+            else:
+                for grp_label, grp_df in grouped.groupby("__group__"):
                     xs = grp_df["x"].to_numpy(dtype=float)
                     means = grp_df["mean"].to_numpy(dtype=float)
                     yerr = grp_df.get("yerr")
                     err = None if yerr is None else yerr.to_numpy(dtype=float)
-                    legend = None if grp_label in ("", "All") else f"{grp_label} (±SEM)"
+                    legend = None if grp_label in ("", "All") else f"{grp_label} ({dist_mode})"
                     error_entries.append({"x": xs, "mean": means, "yerr": err, "label": legend})
 
         self.plot_controller.clear_fit()
@@ -443,6 +547,22 @@ class PlotPanel(ttk.Frame):
             plot_type=self.plot_type.get(),
             error_series=error_entries if error_entries else None,
         )
+
+        self._flush_pending_annotations()
+
+        if dist_mode in {"Box", "Violin"}:
+            try:
+                self._draw_box_violin(work, mode=dist_mode)
+            except Exception as exc:
+                messagebox.showwarning(dist_mode, f"{dist_mode} draw failed: {exc}")
+
+        if x_label == "Ordering" and self._last_series_for_xticks:
+            try:
+                xs, names = zip(*self._last_series_for_xticks)
+                self.axes.set_xticks(xs)
+                self.axes.set_xticklabels(names, rotation=45, ha="right")
+            except Exception:
+                messagebox.showwarning("Plot", "Failed to apply Ordering tick labels.")
 
         current_xlim = self.axes.get_xlim()
 
@@ -494,6 +614,103 @@ class PlotPanel(ttk.Frame):
 
         self.canvas.draw_idle()
 
+    # -------------------------- distribution helpers --------------------------
+    def _compute_group_stats(self, work: pd.DataFrame, *, mode: str) -> pd.DataFrame | None:
+        if work is None or work.empty:
+            return None
+
+        df = work.copy()
+        if "__group__" not in df.columns:
+            df["__group__"] = "All"
+
+        grouped = (
+            df.groupby(["__group__", "x"])["y"]
+            .agg(["count", "mean", "std"])
+            .reset_index()
+        )
+        if grouped.empty:
+            return grouped
+
+        counts = grouped["count"].to_numpy(dtype=float)
+        std = grouped["std"].to_numpy(dtype=float)
+        sem = std / np.sqrt(np.maximum(counts, 1.0))
+
+        if mode == "Mean±SEM":
+            yerr = sem
+        elif mode == "Mean±Std":
+            yerr = std
+        else:  # 95% CI
+            yerr = 1.96 * sem
+
+        grouped = grouped.rename(columns={"mean": "mean"})
+        grouped["yerr"] = yerr
+        result = grouped[["__group__", "x", "mean", "yerr"]]
+        self._last_group_stats = result.copy()
+        return result
+
+    def _draw_box_violin(self, work: pd.DataFrame, *, mode: str) -> None:
+        if work is None or work.empty:
+            raise ValueError("No data available for distribution plot.")
+
+        df = work.copy()
+        if "__group__" not in df.columns:
+            df["__group__"] = "All"
+
+        ax = self.axes
+        groups = sorted(df["__group__"].astype(str).unique())
+        x_values = pd.to_numeric(df["x"], errors="coerce").dropna().unique()
+        if x_values.size == 0:
+            raise ValueError("No finite X values for distribution plot.")
+        xs_sorted = sorted(float(v) for v in x_values)
+
+        if len(groups) > 1:
+            offsets = np.linspace(-0.25, 0.25, len(groups))
+        else:
+            offsets = np.array([0.0])
+
+        width = 0.35 if len(groups) > 1 else 0.5
+
+        for idx, group in enumerate(groups):
+            subset = df[df["__group__"] == group]
+            data_per_x = []
+            positions = []
+            for x_val in xs_sorted:
+                ys = pd.to_numeric(
+                    subset.loc[np.isclose(subset["x"], x_val), "y"], errors="coerce"
+                )
+                ys = ys[np.isfinite(ys)]
+                data_per_x.append(list(ys.values))
+                positions.append(x_val + offsets[idx])
+
+            if mode == "Box":
+                ax.boxplot(data_per_x, positions=positions, widths=width, manage_ticks=False)
+            else:
+                ax.violinplot(
+                    data_per_x,
+                    positions=positions,
+                    widths=width,
+                    showmeans=True,
+                    showextrema=True,
+                    showmedians=True,
+                )
+
+    def _collect_ordering_ticks(self, work: pd.DataFrame) -> list[tuple[float, str]]:
+        ticks: list[tuple[float, str]] = []
+        seen: set[tuple[float, str]] = set()
+        for _, row in work.iterrows():
+            x_val = _safe_float(row.get("x"))
+            tag = str(row.get("tag", ""))
+            if not tag:
+                continue
+            if not isfinite(x_val):
+                continue
+            key = (x_val, tag)
+            if key in seen:
+                continue
+            seen.add(key)
+            ticks.append((x_val, tag))
+        return sorted(ticks, key=lambda item: item[0])
+
     # ------------------------------------------------------------------ exports
     def _export_xy(self) -> None:
         if self._current_xy is None or self._current_xy.empty:
@@ -515,11 +732,18 @@ class PlotPanel(ttk.Frame):
         if self._current_xy is None or self._current_xy.empty:
             messagebox.showinfo("Export Group Stats", "Nothing to export.")
             return
-        renamed = self._current_xy.rename(columns={"__group__": "tag"})
-        grouped = compute_error_table(renamed, mode="SEM")
+        mode = (self.dist_mode.get() or "None").strip()
+        if mode in {"Mean±SEM", "Mean±Std", "95% CI"}:
+            grouped = self._compute_group_stats(self._current_xy, mode=mode)
+            if grouped is None:
+                grouped = pd.DataFrame()
+        else:
+            renamed = self._current_xy.rename(columns={"__group__": "tag"})
+            grouped = compute_error_table(renamed, mode="SEM")
         if grouped.empty:
             messagebox.showinfo("Export Group Stats", "No grouped statistics available.")
             return
+        self._last_group_stats = grouped.copy()
         path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
         if not path:
             return
@@ -831,6 +1055,134 @@ class PlotPanel(ttk.Frame):
         self.plot_controller.clear_crosses()
         self.intersections_box.delete(0, tk.END)
 
+    def _refresh_inverse_params(self) -> None:
+        previous = {name: var.get() for name, var in self.inv_param_vars.items()}
+        for child in self.inv_params_frame.winfo_children():
+            child.destroy()
+        self.inv_param_vars.clear()
+
+        model = self.inv_model.get()
+        defaults = {
+            "Linear": {"m": previous.get("m", "1.0"), "b": previous.get("b", "0.0")},
+            "Quadratic": {
+                "a": previous.get("a", "1.0"),
+                "b": previous.get("b", "0.0"),
+                "c": previous.get("c", "0.0"),
+            },
+            "Power": {"a": previous.get("a", "1.0"), "b": previous.get("b", "1.0")},
+        }
+        examples = {
+            "Linear": "y = m·x + b",
+            "Quadratic": "y = a·x² + b·x + c",
+            "Power": "y = a·xᵇ (a>0)",
+        }
+        self.inv_example.configure(text=examples.get(model, ""))
+        params = defaults.get(model, {})
+        for row, (name, value) in enumerate(params.items()):
+            ttk.Label(self.inv_params_frame, text=name).grid(row=row, column=0, sticky="w")
+            var = tk.StringVar(value=value)
+            ttk.Entry(self.inv_params_frame, textvariable=var, width=12).grid(
+                row=row, column=1, sticky="w", padx=(6, 12), pady=2
+            )
+            self.inv_param_vars[name] = var
+
+    def _on_inverse_solve(self) -> None:
+        for item_id in self.inverse_table.get_children():
+            self.inverse_table.delete(item_id)
+
+        try:
+            params = {name: float(var.get()) for name, var in self.inv_param_vars.items()}
+        except (TypeError, ValueError):
+            messagebox.showwarning("Inverse", "All parameters must be numeric.")
+            return
+
+        inverse_fn = self._inverse_for(self.inv_model.get(), params)
+        if inverse_fn is None:
+            messagebox.showwarning("Inverse", "Unsupported model or invalid parameters.")
+            return
+
+        df = getattr(self.session, "results_df", None)
+        if df is None or df.empty:
+            messagebox.showinfo("Inverse", "No results available. Compute selections first.")
+            return
+
+        y_metric = (self.inv_y_metric.get() or "").strip()
+        if not y_metric:
+            messagebox.showwarning("Inverse", "Choose a Y metric.")
+            return
+
+        work = df.copy()
+        work["y"] = self._resolve_axis(y_metric, work)
+        work = work[[col for col in ("file", "tag", "y") if col in work.columns]]
+        work = work.replace([np.inf, -np.inf], np.nan).dropna(subset=["y"])
+        if work.empty:
+            messagebox.showinfo("Inverse", f"No finite values for {y_metric}.")
+            return
+
+        results: list[tuple[str, float, float, float]] = []
+        if self.inv_y_source.get() == "Group mean":
+            tmp = work.copy()
+            if "tag" in tmp.columns:
+                tmp["__group__"] = tmp["tag"].astype(str)
+            else:
+                tmp["__group__"] = "All"
+            means = tmp.groupby("__group__")["y"].mean().reset_index()
+            for _, row in means.iterrows():
+                y_val = float(row["y"])
+                label = str(row["__group__"]) or "All"
+                sols = [float(val) for val in inverse_fn(y_val) if isfinite(val)]
+                x1 = sols[0] if len(sols) >= 1 else float("nan")
+                x2 = sols[1] if len(sols) >= 2 else float("nan")
+                results.append((label, y_val, x1, x2))
+        else:
+            for _, row in work.iterrows():
+                y_val = float(row["y"])
+                label = str(row.get("tag") or row.get("file") or "") or "(unnamed)"
+                sols = [float(val) for val in inverse_fn(y_val) if isfinite(val)]
+                x1 = sols[0] if len(sols) >= 1 else float("nan")
+                x2 = sols[1] if len(sols) >= 2 else float("nan")
+                results.append((label, y_val, x1, x2))
+
+        if not results:
+            self.inverse_table.insert("", "end", values=("—", "—", "—", "—"))
+            return
+
+        xs_to_plot: list[float] = []
+        ys_to_plot: list[float] = []
+        for label, y_val, x1, x2 in results:
+            display = (
+                label,
+                f"{y_val:.6g}",
+                "" if not isfinite(x1) else f"{x1:.6g}",
+                "" if not isfinite(x2) else f"{x2:.6g}",
+            )
+            self.inverse_table.insert("", "end", values=display)
+            for candidate in (x1, x2):
+                if isfinite(candidate):
+                    xs_to_plot.append(candidate)
+                    ys_to_plot.append(y_val)
+
+        if self.inv_plot_on_chart.get() and xs_to_plot:
+            self.add_annotation_points(np.asarray(xs_to_plot, dtype=float), np.asarray(ys_to_plot, dtype=float), label="Inverse solutions")
+
+    def _export_inverse(self) -> None:
+        rows = [self.inverse_table.item(iid)["values"] for iid in self.inverse_table.get_children()]
+        if not rows:
+            messagebox.showinfo("Export Solutions", "Nothing to export.")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        pd.DataFrame(rows, columns=["label", "y", "x1", "x2"]).to_csv(path, index=False)
+
+    def _copy_inverse(self) -> None:
+        rows = [self.inverse_table.item(iid)["values"] for iid in self.inverse_table.get_children()]
+        if not rows:
+            messagebox.showinfo("Copy", "Nothing to copy.")
+            return
+        df = pd.DataFrame(rows, columns=["label", "y", "x1", "x2"])
+        self._copy_text(df.to_csv(index=False))
+
     @staticmethod
     def _format_number(value: float) -> str:
         return f"{value:.6g}"
@@ -875,6 +1227,145 @@ class PlotPanel(ttk.Frame):
 
         label = f"Lit: y={self._format_number(m)}x{self._format_signed(b)}"
         return fn, label
+
+    def _inverse_for(self, model: str, params: dict[str, float]):
+        if model == "Linear":
+            m = float(params.get("m", 0.0))
+            b = float(params.get("b", 0.0))
+            if m == 0:
+                return None
+
+            def inv_linear(y: float) -> list[float]:
+                return [(y - b) / m]
+
+            return inv_linear
+
+        if model == "Power":
+            a = float(params.get("a", 1.0))
+            b = float(params.get("b", 1.0))
+            if a <= 0 or b == 0:
+                return None
+
+            def inv_power(y: float) -> list[float]:
+                ratio = y / a
+                if ratio < 0:
+                    return []
+                try:
+                    value = float(np.power(ratio, 1.0 / b))
+                except Exception:
+                    return []
+                return [value]
+
+            return inv_power
+
+        if model == "Quadratic":
+            A = float(params.get("a", 0.0))
+            B = float(params.get("b", 0.0))
+            C = float(params.get("c", 0.0))
+
+            def inv_quadratic(y: float) -> list[float]:
+                a = A
+                b = B
+                c = C - y
+                if a == 0:
+                    if b == 0:
+                        return []
+                    return [(-c) / b]
+                discriminant = b * b - 4 * a * c
+                if discriminant < 0:
+                    return []
+                root = float(np.sqrt(discriminant))
+                return [(-b - root) / (2 * a), (-b + root) / (2 * a)]
+
+            return inv_quadratic
+
+        return None
+
+    # ------------------------------ Annotations -------------------------------
+    def add_annotation_points(self, xs: np.ndarray, ys: np.ndarray, label: str = "Points") -> None:
+        data = (
+            np.asarray(xs, dtype=float),
+            np.asarray(ys, dtype=float),
+            label,
+        )
+        # Drop any identical queued annotation (same label and coordinates).
+        self._pending_annotations = [
+            existing
+            for existing in self._pending_annotations
+            if not (
+                existing[2] == label
+                and np.array_equal(existing[0], data[0])
+                and np.array_equal(existing[1], data[1])
+            )
+        ]
+        self._pending_annotations.append(data)
+        try:
+            self.plot_controller.draw_points(data[0], data[1], label=label, style_kwargs={"color": "#1E88E5"})
+            self.canvas.draw_idle()
+            self._pending_annotations.pop()  # already drawn
+        except Exception:
+            # keep queued for future plots
+            pass
+
+    def _flush_pending_annotations(self) -> None:
+        if not self._pending_annotations:
+            return
+        queued: list[tuple[np.ndarray, np.ndarray, str]] = []
+        seen: set[tuple[str, tuple[float, ...], tuple[float, ...]]] = set()
+        for xs, ys, label in self._pending_annotations:
+            key = (label, tuple(xs.tolist()), tuple(ys.tolist()))
+            if key in seen:
+                continue
+            try:
+                self.plot_controller.draw_points(xs, ys, label=label, style_kwargs={"color": "#1E88E5"})
+            except Exception:
+                queued.append((xs, ys, label))
+            seen.add(key)
+        self._pending_annotations = queued
+        if not queued:
+            self.canvas.draw_idle()
+
+    # ------------------------------ Clipboard ---------------------------------
+    def _copy_text(self, text: str) -> None:
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+        except Exception as exc:
+            messagebox.showwarning("Copy", f"Clipboard error: {exc}")
+
+    def _copy_xy(self) -> None:
+        if self._current_xy is None or self._current_xy.empty:
+            messagebox.showinfo("Copy", "Nothing to copy.")
+            return
+        cols = [col for col in ("file", "tag", "x", "y", "__group__") if col in self._current_xy.columns]
+        self._copy_text(self._current_xy.loc[:, cols].to_csv(index=False))
+
+    def _copy_group_stats(self) -> None:
+        if self._last_group_stats is None or self._last_group_stats.empty:
+            messagebox.showinfo("Copy", "No grouped statistics to copy. Plot with a Dist/Errors mode first.")
+            return
+        self._copy_text(self._last_group_stats.to_csv(index=False))
+
+    def _copy_intersections(self) -> None:
+        if self.intersections_box.size() == 0:
+            messagebox.showinfo("Copy", "Nothing to copy.")
+            return
+        rows = [self.intersections_box.get(idx) for idx in range(self.intersections_box.size())]
+        self._copy_text("\n".join(rows))
+
+    def _copy_residuals(self) -> None:
+        if self._fit_fn is None or self._current_xy is None or self._current_xy.empty:
+            messagebox.showinfo("Copy", "Residuals are not available.")
+            return
+        x_vals = self._current_xy["x"].to_numpy(dtype=float)
+        try:
+            predicted = np.asarray(self._fit_fn(x_vals), dtype=float)
+        except Exception:
+            messagebox.showinfo("Copy", "Unable to evaluate fitted model.")
+            return
+        export = self._current_xy.copy()
+        export = export.assign(y_fit=predicted, residual=export["y"].to_numpy(dtype=float) - predicted)
+        self._copy_text(export.to_csv(index=False))
 
 
 __all__ = ["PlotPanel"]
