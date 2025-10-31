@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -62,6 +62,7 @@ class TkRamanApp:
         left_split.add(table_box, weight=2)
 
         # --------------------------- right pane (controls + plot)
+        # NOTE: controls live in the scrollable right panel; the canvas sits below (in PlotPanel).
         right_container = ttk.Frame(main_split)
         main_split.add(right_container, weight=2)
         right_split = ttk.Panedwindow(right_container, orient="vertical")
@@ -79,13 +80,18 @@ class TkRamanApp:
         )
         self.selection_panel.pack(side="top", fill="both", expand=True)
 
-        # Plot panel: controls live in the scrollable area; canvas sits in the lower pane.
-        self.plot_panel = PlotPanel(
-            right_container,
-            session=self.session,
-            controls_parent=controls,
-        )
-        right_split.add(self.plot_panel, weight=4)
+        # Plot panel: controls go into 'controls', canvas is the frame we add below.
+        # (Idempotent: only create once.)
+        if not hasattr(self, "plot_panel"):
+            self.plot_panel = PlotPanel(
+                right_container,
+                session=self.session,
+                controls_parent=controls,
+            )
+            right_split.add(self.plot_panel, weight=4)
+        else:
+            # keep reference fresh if re-entering _build_ui()
+            self.plot_panel.session = self.session
 
         self.root.geometry("1280x800")
         self.root.minsize(900, 600)
@@ -101,6 +107,7 @@ class TkRamanApp:
 
         combined: List[pd.DataFrame] = []
         tables: Dict[str, pd.DataFrame] = {}
+        just_loaded_files: List[str] = []
         for path in paths:
             try:
                 df = pd.read_csv(path)
@@ -114,6 +121,7 @@ class TkRamanApp:
 
             combined.append(df)
             tables[str(path)] = df.copy()
+            just_loaded_files.append(str(path))
 
         if not combined:
             return
@@ -128,6 +136,23 @@ class TkRamanApp:
             else []
         )
         self.file_list.set_files(files)
+
+        # --- OPTIONAL batch tag for this import batch (non-blocking)
+        try:
+            if len(just_loaded_files) > 1:
+                preset_tag = simpledialog.askstring(
+                    "Apply tag to imported files (optional)",
+                    "Enter a sample tag to apply to all **imported in this batch** (leave blank to skip):",
+                    parent=self.root,
+                )
+                if preset_tag:
+                    for fid in just_loaded_files:
+                        self.session.set_tag(fid, preset_tag)
+                    # refresh UI
+                    self.selection_panel.set_context(self.session.file_to_tag)
+                    self.file_list.refresh()
+        except Exception as exc:
+            messagebox.showwarning("Batch tag", f"Could not apply tag: {exc}")
 
         if files:
             self.file_list.select_file(files[0])
@@ -157,40 +182,71 @@ class TkRamanApp:
             )
             return
 
-        tag_column = next((c for c in df.columns if c.lower() == "tag"), None)
-        x_column = next(
-            (c for c in df.columns if c.lower() in {"x", "x_value", "xvalue"}),
+        tag_column = next(
+            (c for c in df.columns if c.lower() in ("tag", "sample", "name", "label")),
+            None,
+        )
+        order_column = next(
+            (c for c in df.columns if c.lower() in ("ordering", "order")),
             None,
         )
 
         tags_applied = 0
-        mapping: Dict[str, float] = {}
+        ordering_map: Dict[str, float] = {}
 
-        for _, row in df.iterrows():
-            file_id = str(row.get(file_column, "")).strip()
-            if not file_id:
-                continue
-
-            if tag_column is not None:
-                tag = str(row.get(tag_column, "")).strip()
-                self.session.set_tag(file_id, tag)
-                tags_applied += 1
-
-            if x_column is not None:
+        if tag_column:
+            for _, row in df.iterrows():
+                file_id = str(row.get(file_column, "")).strip()
+                if not file_id:
+                    continue
+                tag_value = str(row.get(tag_column, "")).strip()
                 try:
-                    mapping[file_id] = float(row.get(x_column))
+                    self.session.set_tag(file_id, tag_value)
+                    if tag_value:
+                        tags_applied += 1
+                except Exception:
+                    continue
+
+        if order_column:
+            for _, row in df.iterrows():
+                file_id = str(row.get(file_column, "")).strip()
+                if not file_id:
+                    continue
+                try:
+                    ordering_map[file_id] = float(row.get(order_column))
                 except (TypeError, ValueError):
                     continue
 
-        if mapping:
-            self.session.update_x_mapping(mapping)
+        ordering_errors: List[str] = []
+        if ordering_map:
+            if hasattr(self.session, "update_ordering") and callable(
+                self.session.update_ordering
+            ):
+                try:
+                    self.session.update_ordering(ordering_map)
+                except Exception as exc:
+                    ordering_errors.append(f"update_ordering: {exc}")
+            else:
+                ordering_errors.append(
+                    "update_ordering: session missing required API; run ordering migration."
+                )
 
         self.selection_panel.set_context(self.session.file_to_tag)
         self.file_list.refresh()
-        messagebox.showinfo(
-            "Import Tags/X CSV",
-            f"Imported {tags_applied} tags and {len(mapping)} X values.",
-        )
+        self._refresh_plot_metrics()
+
+        if ordering_errors:
+            messagebox.showwarning(
+                "Import Tags/X CSV",
+                "Imported with warnings:\n" + "\n".join(ordering_errors),
+            )
+        else:
+            messagebox.showinfo(
+                "Import Tags/X CSV",
+                (
+                    f"Imported {tags_applied} tags and {len(ordering_map)} ordering values."
+                ),
+            )
 
     # ------------------------------------------------------------------ callbacks
     def _on_file_selection_changed(self, files: List[str]) -> None:
@@ -309,9 +365,8 @@ class TkRamanApp:
                 tag=tag,
             )
 
+    # Keep PlotPanel’s X/Y menus current with session metrics/results
     def _refresh_plot_metrics(self) -> None:
-        """Synchronize PlotPanel's X/Y choices with current session metrics/results."""
-
         try:
             if hasattr(self.session, "list_metrics"):
                 names = list(self.session.list_metrics())
@@ -319,14 +374,10 @@ class TkRamanApp:
                 names = list(getattr(self.session, "metrics", {}).keys())
             else:
                 df = getattr(self.session, "results_df", None)
-                names = [
-                    str(col)
-                    for col in getattr(df, "columns", [])
-                    if col not in {"file", "tag"}
-                ] if df is not None else []
-        except Exception:
+                names = [c for c in df.columns if c not in {"file", "tag"}] if df is not None else []
+        except Exception as exc:
+            messagebox.showwarning("Plot options", f"Could not refresh metrics: {exc}")
             names = []
-
         if hasattr(self, "plot_panel"):
             self.plot_panel.set_metrics_for_xy(names)
 

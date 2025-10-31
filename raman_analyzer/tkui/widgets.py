@@ -209,7 +209,7 @@ class FileList(ttk.Frame):
         )
         self.tree.heading("file", text="File")
         self.tree.heading("tag", text="Tag (Sample)")
-        self.tree.heading("x", text="X mapping")
+        self.tree.heading("x", text="Ordering")
         self.tree.column("file", width=260, anchor="w", stretch=True)
         self.tree.column("tag", width=140, anchor="center", stretch=False)
         self.tree.column("x", width=110, anchor="e", stretch=False)
@@ -226,11 +226,11 @@ class FileList(ttk.Frame):
         previous = self.get_selected_files()
         self._files = files
         self.tree.delete(*self.tree.get_children())
-        mapping = dict(getattr(self.session, "x_mapping", {}) or {})
+        mapping = dict(getattr(self.session, "ordering", {}) or {})
         tags = dict(getattr(self.session, "file_to_tag", {}) or {})
         for file_id in self._files:
             tag = tags.get(file_id, "")
-            x_val = self._format_x(mapping.get(file_id))
+            x_val = self._format_ordering(mapping.get(file_id))
             self.tree.insert("", "end", iid=file_id, values=(file_id, tag, x_val))
 
         for file_id in previous:
@@ -242,13 +242,13 @@ class FileList(ttk.Frame):
     def refresh(self) -> None:
         """Refresh displayed Tag/X values from the session."""
 
-        mapping = dict(getattr(self.session, "x_mapping", {}) or {})
+        mapping = dict(getattr(self.session, "ordering", {}) or {})
         tags = dict(getattr(self.session, "file_to_tag", {}) or {})
         for file_id in self._files:
             if not self.tree.exists(file_id):
                 continue
             tag = tags.get(file_id, "")
-            x_val = self._format_x(mapping.get(file_id))
+            x_val = self._format_ordering(mapping.get(file_id))
             self.tree.item(file_id, values=(file_id, tag, x_val))
 
     def get_selected_files(self) -> List[str]:
@@ -332,35 +332,50 @@ class FileList(ttk.Frame):
             return
 
         if col_index == 2:
-            if new_value == "":
-                mapping = dict(getattr(self.session, "x_mapping", {}) or {})
-                if file_id in mapping:
-                    del mapping[file_id]
-                    self.session.update_x_mapping(mapping)
-                    if callable(self._on_x_changed):
-                        try:
-                            self._on_x_changed(file_id, None)
-                        except Exception:
-                            pass
-            else:
-                try:
-                    numeric = float(new_value)
-                except ValueError:
-                    messagebox.showerror("Invalid X", "X mapping must be numeric")
-                    self.refresh()
-                    return
-                mapping = dict(getattr(self.session, "x_mapping", {}) or {})
-                mapping[file_id] = numeric
-                self.session.update_x_mapping(mapping)
-                if callable(self._on_x_changed):
-                    try:
-                        self._on_x_changed(file_id, numeric)
-                    except Exception:
-                        pass
+            self._commit_ordering_edit(file_id, new_value)
+            return
+
+    def _commit_ordering_edit(self, file_id: str, new_value: str) -> None:
+        """Persist an Ordering edit and notify callbacks."""
+        if new_value == "":
+            self._update_ordering_map(file_id, None)
             self.refresh()
+            if callable(self._on_x_changed):
+                try:
+                    self._on_x_changed(file_id, None)
+                except Exception:
+                    pass
+            return
+
+        try:
+            numeric = float(new_value)
+        except ValueError:
+            messagebox.showerror("Invalid value", "Ordering must be numeric.")
+            self.refresh()
+            return
+
+        self._update_ordering_map(file_id, numeric)
+        self.refresh()
+        if callable(self._on_x_changed):
+            try:
+                self._on_x_changed(file_id, numeric)
+            except Exception:
+                pass
+
+    def _update_ordering_map(self, file_id: str, value: Optional[float]) -> None:
+        """Strict: write Ordering only."""
+        ordering = dict(getattr(self.session, "ordering", {}) or {})
+        if value is None:
+            ordering.pop(file_id, None)
+        else:
+            ordering[file_id] = float(value)
+        if hasattr(self.session, "update_ordering") and callable(self.session.update_ordering):
+            self.session.update_ordering(ordering)
+        else:
+            setattr(self.session, "ordering", ordering)
 
     @staticmethod
-    def _format_x(value: Optional[float]) -> str:
+    def _format_ordering(value: Optional[float]) -> str:
         if value is None:
             return ""
         try:
@@ -394,6 +409,8 @@ class SelectionPanel(ttk.Frame):
         self.session = session  # for API parity; not used directly here
         self._cb_metrics = on_metrics
         self._cb_autopop = on_autopopulate
+        self._last_row: Optional[int] = None
+        self._last_col: Optional[int] = None
         self.file_to_tag: Dict[str, str] = {}
 
         # picks[bucket][component][file] -> List[(row, col, value)]
@@ -427,6 +444,29 @@ class SelectionPanel(ttk.Frame):
         target: Optional[str] = None,
         tag: Optional[str] = None,
     ) -> None:
+        self._last_row, self._last_col = int(row1), int(col1)
+        for attr_name in (
+            "row_var",
+            "col_var",
+            "row_var_a",
+            "col_var_a",
+            "row_var_b",
+            "col_var_b",
+        ):
+            var = getattr(self, attr_name, None)
+            if var is None:
+                continue
+            try:
+                if attr_name.startswith("row"):
+                    var.set(str(self._last_row))
+                else:
+                    var.set(str(self._last_col))
+            except Exception as exc:
+                messagebox.showwarning(
+                    "Selection coordinates",
+                    f"Could not update stored {attr_name.replace('_', ' ')}: {exc}",
+                )
+
         key = target or self._armed
         bucket, component = key.split(".")
         picks = self._picks[bucket][component].setdefault(file_id, [])
@@ -434,6 +474,9 @@ class SelectionPanel(ttk.Frame):
         if tag is not None:
             self.file_to_tag[str(file_id)] = str(tag)
         self._refresh_tables_and_emit()
+
+    def get_last_pick_coords(self) -> Tuple[Optional[int], Optional[int]]:
+        return self._last_row, self._last_col
 
     def get_mode(self) -> str:
         return self._mode.get()
