@@ -21,6 +21,7 @@ class TkRamanApp:
         self.session = session or AnalysisSession()
         self.current_file: Optional[str] = None
 
+        self._ui_built = False
         self._build_menu()
         self._build_ui()
 
@@ -29,13 +30,24 @@ class TkRamanApp:
         menubar = tk.Menu(self.root)
         menu_file = tk.Menu(menubar, tearoff=0)
         menu_file.add_command(label="Load CSVs…", command=self._load_csvs)
-        menu_file.add_command(label="Import Tags/X CSV…", command=self._import_mapping_csv)
+        menu_file.add_command(label="Import mapping CSV…", command=self._import_mapping_csv)
         menu_file.add_separator()
         menu_file.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=menu_file)
         self.root.config(menu=menubar)
 
     def _build_ui(self) -> None:
+        # If UI was already constructed, just retarget session-aware widgets.
+        if getattr(self, "_ui_built", False):
+            if hasattr(self, "file_list"):
+                self.file_list.session = self.session
+            if hasattr(self, "selection_panel"):
+                self.selection_panel.session = self.session
+            if hasattr(self, "plot_panel"):
+                self.plot_panel.session = self.session
+            self._refresh_plot_metrics()
+            return
+
         main_split = ttk.Panedwindow(self.root, orient="horizontal")
         main_split.pack(fill="both", expand=True)
 
@@ -88,14 +100,12 @@ class TkRamanApp:
                 session=self.session,
                 controls_parent=controls,
             )
-            right_split.add(self.plot_panel, weight=4)
-        else:
-            # keep reference fresh if re-entering _build_ui()
-            self.plot_panel.session = self.session
+        right_split.add(self.plot_panel, weight=4)
 
         self.root.geometry("1280x800")
         self.root.minsize(900, 600)
         self._refresh_plot_metrics()
+        self._ui_built = True
 
     # ------------------------------------------------------------------ data IO
     def _load_csvs(self) -> None:
@@ -138,21 +148,18 @@ class TkRamanApp:
         self.file_list.set_files(files)
 
         # --- OPTIONAL batch tag for this import batch (non-blocking)
-        try:
-            if len(just_loaded_files) > 1:
-                preset_tag = simpledialog.askstring(
-                    "Apply tag to imported files (optional)",
-                    "Enter a sample tag to apply to all **imported in this batch** (leave blank to skip):",
-                    parent=self.root,
-                )
-                if preset_tag:
-                    for fid in just_loaded_files:
-                        self.session.set_tag(fid, preset_tag)
-                    # refresh UI
-                    self.selection_panel.set_context(self.session.file_to_tag)
-                    self.file_list.refresh()
-        except Exception as exc:
-            messagebox.showwarning("Batch tag", f"Could not apply tag: {exc}")
+        if len(just_loaded_files) > 1:
+            preset_tag = simpledialog.askstring(
+                "Apply tag to imported files (optional)",
+                "Enter a sample tag to apply to all **imported in this batch** (leave blank to skip):",
+                parent=self.root,
+            )
+            if preset_tag:
+                for fid in just_loaded_files:
+                    self.session.set_tag(fid, preset_tag)
+                # refresh UI
+                self.selection_panel.set_context(self.session.file_to_tag)
+                self.file_list.refresh()
 
         if files:
             self.file_list.select_file(files[0])
@@ -164,7 +171,7 @@ class TkRamanApp:
 
     def _import_mapping_csv(self) -> None:
         path = filedialog.askopenfilename(
-            title="Select Tags/X mapping CSV", filetypes=[("CSV files", "*.csv")]
+            title="Select mapping CSV", filetypes=[("CSV files", "*.csv")]
         )
         if not path:
             return
@@ -172,13 +179,13 @@ class TkRamanApp:
         try:
             df = pd.read_csv(path)
         except Exception as exc:  # pragma: no cover - interactive warning
-            messagebox.showwarning("Import Tags/X CSV", f"Failed to read {path}\n{exc}")
+            messagebox.showwarning("Import mapping CSV", f"Failed to read {path}\n{exc}")
             return
 
         file_column = next((c for c in df.columns if c.lower() == "file"), None)
         if not file_column:
             messagebox.showwarning(
-                "Import Tags/X CSV", "CSV must include a 'file' column."
+                "Import mapping CSV", "CSV must include a 'file' column."
             )
             return
 
@@ -212,41 +219,41 @@ class TkRamanApp:
                 file_id = str(row.get(file_column, "")).strip()
                 if not file_id:
                     continue
+                raw_value = row.get(order_column)
+                if raw_value is None or (isinstance(raw_value, float) and pd.isna(raw_value)):
+                    continue
                 try:
-                    ordering_map[file_id] = float(row.get(order_column))
+                    ordering_map[file_id] = float(raw_value)
                 except (TypeError, ValueError):
                     continue
 
-        ordering_errors: List[str] = []
+        ordering_warning: Optional[str] = None
         if ordering_map:
             if hasattr(self.session, "update_ordering") and callable(
-                self.session.update_ordering
+                getattr(self.session, "update_ordering", None)
             ):
                 try:
                     self.session.update_ordering(ordering_map)
                 except Exception as exc:
-                    ordering_errors.append(f"update_ordering: {exc}")
+                    ordering_warning = f"update_ordering failed: {exc}"
             else:
-                ordering_errors.append(
-                    "update_ordering: session missing required API; run ordering migration."
-                )
+                ordering_warning = "session missing required API; run ordering migration."
+                if hasattr(self.session, "ordering"):
+                    try:
+                        setattr(self.session, "ordering", dict(ordering_map))
+                    except Exception:
+                        pass
 
         self.selection_panel.set_context(self.session.file_to_tag)
         self.file_list.refresh()
         self._refresh_plot_metrics()
 
-        if ordering_errors:
-            messagebox.showwarning(
-                "Import Tags/X CSV",
-                "Imported with warnings:\n" + "\n".join(ordering_errors),
-            )
-        else:
-            messagebox.showinfo(
-                "Import Tags/X CSV",
-                (
-                    f"Imported {tags_applied} tags and {len(ordering_map)} ordering values."
-                ),
-            )
+        messagebox.showinfo(
+            "Import mapping CSV",
+            f"Success: Imported {tags_applied} tags and {len(ordering_map)} ordering values.",
+        )
+        if ordering_warning:
+            messagebox.showwarning("Import mapping CSV", ordering_warning)
 
     # ------------------------------------------------------------------ callbacks
     def _on_file_selection_changed(self, files: List[str]) -> None:
@@ -368,13 +375,19 @@ class TkRamanApp:
     # Keep PlotPanel’s X/Y menus current with session metrics/results
     def _refresh_plot_metrics(self) -> None:
         try:
-            if hasattr(self.session, "list_metrics"):
+            if hasattr(self.session, "list_metrics") and callable(
+                getattr(self.session, "list_metrics", None)
+            ):
                 names = list(self.session.list_metrics())
             elif hasattr(self.session, "metrics"):
-                names = list(getattr(self.session, "metrics", {}).keys())
+                metrics_obj = getattr(self.session, "metrics", {}) or {}
+                names = list(metrics_obj.keys())
             else:
                 df = getattr(self.session, "results_df", None)
-                names = [c for c in df.columns if c not in {"file", "tag"}] if df is not None else []
+                if df is None:
+                    names = []
+                else:
+                    names = [c for c in df.columns if c not in {"file", "tag"}]
         except Exception as exc:
             messagebox.showwarning("Plot options", f"Could not refresh metrics: {exc}")
             names = []

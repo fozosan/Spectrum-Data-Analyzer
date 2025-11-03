@@ -60,9 +60,10 @@ def session_from_dict(data: Dict[str, Any]) -> AnalysisSession:
     for file_id, tag in (data.get("file_to_tag", {}) or {}).items():
         sess.set_tag(str(file_id), str(tag))
 
-    ordering_map = data.get("ordering")
-    if ordering_map is None:
-        if data.get("x_mapping"):
+    if "ordering" in data and data["ordering"] is not None:
+        ordering_map = data["ordering"] or {}
+    else:
+        if "x_mapping" in data:
             raise ValueError(
                 "Session payload is missing 'ordering'. Use tools/migrate_session_ordering.py to upgrade."
             )

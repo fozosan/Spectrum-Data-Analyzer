@@ -2,7 +2,15 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import pandas as pd
 import tkinter as tk
@@ -180,7 +188,7 @@ class DataTable(ttk.Frame):
 
 
 class FileList(ttk.Frame):
-    """Tree-based file list with editable Tag and X mapping columns."""
+    """Tree-based file list with editable Tag and Ordering columns."""
 
     def __init__(
         self,
@@ -198,6 +206,7 @@ class FileList(ttk.Frame):
         self._on_selection_changed = on_selection_changed
         self._files: List[str] = []
         self._editor: Optional[ttk.Entry] = None
+        self._editing_column: Optional[str] = None
 
         columns = ("file", "tag", "x")
         self.tree = ttk.Treeview(
@@ -208,7 +217,7 @@ class FileList(ttk.Frame):
             height=10,
         )
         self.tree.heading("file", text="File")
-        self.tree.heading("tag", text="Tag (Sample)")
+        self.tree.heading("tag", text="Tag")
         self.tree.heading("x", text="Ordering")
         self.tree.column("file", width=260, anchor="w", stretch=True)
         self.tree.column("tag", width=140, anchor="center", stretch=False)
@@ -284,6 +293,8 @@ class FileList(ttk.Frame):
         if not row_id or col_id == "#1":
             return
 
+        self._editing_column = col_id
+
         if self._editor is not None:
             self._editor.destroy()
 
@@ -311,6 +322,7 @@ class FileList(ttk.Frame):
             if self._editor is not None:
                 self._editor.destroy()
                 self._editor = None
+            self._editing_column = None
 
         editor.bind("<Return>", _commit)
         editor.bind("<FocusOut>", _commit)
@@ -329,38 +341,56 @@ class FileList(ttk.Frame):
                     self._on_tag_changed(file_id, new_value)
                 except Exception:
                     pass
+            self._editing_column = None
             return
 
         if col_index == 2:
-            self._commit_ordering_edit(file_id, new_value)
+            success, numeric = self._commit_ordering_edit(file_id, new_value)
+            mapping = dict(getattr(self.session, "ordering", {}) or {})
+            display = self._format_ordering(mapping.get(file_id))
+            if success:
+                if numeric is not None:
+                    display = self._format_ordering(numeric)
+                else:
+                    display = ""
+            values[col_index] = display
+            self.tree.item(row_id, values=tuple(values))
+            self._editing_column = None
             return
 
-    def _commit_ordering_edit(self, file_id: str, new_value: str) -> None:
+        self._editing_column = None
+
+    def _commit_ordering_edit(self, file_id: str, new_value: str) -> tuple[bool, Optional[float]]:
         """Persist an Ordering edit and notify callbacks."""
-        if new_value == "":
+        result = self._persist_ordering_value(file_id, new_value)
+        if result is None:
+            return False, None
+        success, numeric = result
+        if not success:
+            return False, None
+
+        callback = getattr(self._on_x_changed, "__call__", None)
+        if callable(callback):
+            try:
+                callback(file_id, numeric)
+            except Exception:
+                pass
+        return True, numeric
+
+    def _persist_ordering_value(self, file_id: str, new_value: str) -> tuple[bool, Optional[float]] | None:
+        new_value = (new_value or "").strip()
+        if not new_value:
             self._update_ordering_map(file_id, None)
-            self.refresh()
-            if callable(self._on_x_changed):
-                try:
-                    self._on_x_changed(file_id, None)
-                except Exception:
-                    pass
-            return
+            return True, None
 
         try:
             numeric = float(new_value)
-        except ValueError:
+        except (TypeError, ValueError):
             messagebox.showerror("Invalid value", "Ordering must be numeric.")
-            self.refresh()
-            return
+            return False, None
 
         self._update_ordering_map(file_id, numeric)
-        self.refresh()
-        if callable(self._on_x_changed):
-            try:
-                self._on_x_changed(file_id, numeric)
-            except Exception:
-                pass
+        return True, numeric
 
     def _update_ordering_map(self, file_id: str, value: Optional[float]) -> None:
         """Strict: write Ordering only."""
@@ -369,8 +399,12 @@ class FileList(ttk.Frame):
             ordering.pop(file_id, None)
         else:
             ordering[file_id] = float(value)
-        if hasattr(self.session, "update_ordering") and callable(self.session.update_ordering):
-            self.session.update_ordering(ordering)
+        updater = getattr(self.session, "update_ordering", None)
+        if callable(updater):
+            try:
+                updater(ordering)
+            except Exception:
+                setattr(self.session, "ordering", ordering)
         else:
             setattr(self.session, "ordering", ordering)
 
@@ -409,8 +443,8 @@ class SelectionPanel(ttk.Frame):
         self.session = session  # for API parity; not used directly here
         self._cb_metrics = on_metrics
         self._cb_autopop = on_autopopulate
-        self._last_row: Optional[int] = None
-        self._last_col: Optional[int] = None
+        self._last_row: int | None = None
+        self._last_col: int | None = None
         self.file_to_tag: Dict[str, str] = {}
 
         # picks[bucket][component][file] -> List[(row, col, value)]
@@ -444,7 +478,10 @@ class SelectionPanel(ttk.Frame):
         target: Optional[str] = None,
         tag: Optional[str] = None,
     ) -> None:
-        self._last_row, self._last_col = int(row1), int(col1)
+        point_value = float(value)
+        row_value = int(row1)
+        col_value = int(col1)
+        self._last_row, self._last_col = row_value, col_value
         for attr_name in (
             "row_var",
             "col_var",
@@ -454,28 +491,26 @@ class SelectionPanel(ttk.Frame):
             "col_var_b",
         ):
             var = getattr(self, attr_name, None)
-            if var is None:
+            if var is None or not hasattr(var, "set"):
                 continue
+            coord_val = row_value if attr_name.startswith("row") else col_value
             try:
-                if attr_name.startswith("row"):
-                    var.set(str(self._last_row))
+                if isinstance(var, tk.StringVar):
+                    var.set(str(coord_val))
                 else:
-                    var.set(str(self._last_col))
-            except Exception as exc:
-                messagebox.showwarning(
-                    "Selection coordinates",
-                    f"Could not update stored {attr_name.replace('_', ' ')}: {exc}",
-                )
+                    var.set(coord_val)
+            except Exception:
+                continue
 
         key = target or self._armed
         bucket, component = key.split(".")
         picks = self._picks[bucket][component].setdefault(file_id, [])
-        picks.append((int(row1), int(col1), float(value)))
+        picks.append((int(row1), int(col1), point_value))
         if tag is not None:
             self.file_to_tag[str(file_id)] = str(tag)
         self._refresh_tables_and_emit()
 
-    def get_last_pick_coords(self) -> Tuple[Optional[int], Optional[int]]:
+    def get_last_pick_coords(self) -> tuple[int | None, int | None]:
         return self._last_row, self._last_col
 
     def get_mode(self) -> str:
