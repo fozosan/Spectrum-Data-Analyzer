@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2:
-        print("Usage: migrate_session_ordering.py <input.json> [output.json]")
+    if len(argv) != 3:
+        print("Usage: migrate_session_ordering.py <input.json> <output.json>")
         return 1
 
     src = Path(argv[1])
@@ -17,35 +17,33 @@ def main(argv: list[str]) -> int:
         print(f"Input file not found: {src}")
         return 1
 
-    dst = Path(argv[2]) if len(argv) > 2 else src
+    dst = Path(argv[2])
 
     with src.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 
-    if "ordering" not in data and "x_mapping" not in data:
-        print("Session does not contain 'ordering' or legacy 'x_mapping' entries; nothing to migrate.")
+    legacy = data.pop("x_mapping", None)
+    ordering = data.get("ordering")
+
+    if ordering is None and legacy is None:
+        print("No 'ordering' or legacy 'x_mapping' data found; nothing to migrate.")
         return 1
 
-    legacy = data.pop("x_mapping", None)
-    if "ordering" in data and data["ordering"]:
-        # Ensure ordering keys are strings and values are floats
-        ordering = {str(k): float(v) for k, v in dict(data["ordering"]).items()}
-    elif legacy:
-        ordering = {str(k): float(v) for k, v in dict(legacy).items()}
-        data["ordering"] = ordering
+    if ordering is not None:
+        ordering_map = {str(k): float(v) for k, v in dict(ordering).items()}
     else:
-        data["ordering"] = {}
-        ordering = {}
+        ordering_map = {str(k): float(v) for k, v in dict(legacy).items()}
+        data["ordering"] = ordering_map
 
-    if dst == src:
-        # writing back to same file; ensure atomic by writing temp? For simplicity, overwrite
-        with dst.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2, sort_keys=True)
+    with dst.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2, sort_keys=True)
+
+    if ordering is not None and legacy is None:
+        print(f"Re-saved session with existing ordering to {dst}.")
+    elif ordering is not None:
+        print(f"Migrated session with {len(ordering_map)} ordering entries (overwriting legacy x_mapping) to {dst}.")
     else:
-        with dst.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2, sort_keys=True)
-
-    print(f"Migrated session saved to {dst} with {len(ordering)} ordering entries.")
+        print(f"Migrated legacy x_mapping → ordering with {len(ordering_map)} entries to {dst}.")
     return 0
 
 

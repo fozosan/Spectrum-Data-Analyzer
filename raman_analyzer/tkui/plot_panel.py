@@ -629,24 +629,30 @@ class PlotPanel(ttk.Frame):
             .reset_index()
         )
         if grouped.empty:
+            self._last_group_stats = pd.DataFrame()
             return grouped
 
         counts = grouped["count"].to_numpy(dtype=float)
         std = grouped["std"].to_numpy(dtype=float)
-        sem = std / np.sqrt(np.maximum(counts, 1.0))
+        std = np.where(np.isfinite(std), std, 0.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sem = np.divide(std, np.sqrt(np.maximum(counts, 1.0)))
+        sem = np.where(np.isfinite(sem), sem, 0.0)
+        ci95 = 1.96 * sem
 
-        if mode == "Mean±SEM":
-            yerr = sem
-        elif mode == "Mean±Std":
-            yerr = std
-        else:  # 95% CI
-            yerr = 1.96 * sem
-
-        grouped = grouped.rename(columns={"mean": "mean"})
-        grouped["yerr"] = yerr
-        result = grouped[["__group__", "x", "mean", "yerr"]]
+        result = grouped.copy()
+        result["std"] = std
+        result["sem"] = sem
+        result["ci95"] = ci95
+        if mode == "Mean±Std":
+            result["yerr"] = std
+        elif mode == "95% CI":
+            result["yerr"] = ci95
+        else:
+            result["yerr"] = sem
+        result["mode"] = mode
         self._last_group_stats = result.copy()
-        return result
+        return result[["__group__", "x", "mean", "yerr"]]
 
     def _draw_box_violin(self, work: pd.DataFrame, *, mode: str) -> None:
         if work is None or work.empty:
@@ -656,9 +662,19 @@ class PlotPanel(ttk.Frame):
         if "__group__" not in df.columns:
             df["__group__"] = "All"
 
+        df["x"] = pd.to_numeric(df["x"], errors="coerce")
+        df["y"] = pd.to_numeric(df["y"], errors="coerce")
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["x", "y"])
+        if df.empty:
+            raise ValueError("No finite values for distribution plot.")
+
+        stats = df[["__group__", "x", "y"]].copy()
+        stats["mode"] = mode
+        self._last_group_stats = stats
+
         ax = self.axes
         groups = sorted(df["__group__"].astype(str).unique())
-        x_values = pd.to_numeric(df["x"], errors="coerce").dropna().unique()
+        x_values = df["x"].dropna().unique()
         if x_values.size == 0:
             raise ValueError("No finite X values for distribution plot.")
         xs_sorted = sorted(float(v) for v in x_values)
@@ -670,18 +686,23 @@ class PlotPanel(ttk.Frame):
 
         width = 0.35 if len(groups) > 1 else 0.5
 
+        any_drawn = False
         for idx, group in enumerate(groups):
             subset = df[df["__group__"] == group]
             data_per_x = []
             positions = []
             for x_val in xs_sorted:
-                ys = pd.to_numeric(
-                    subset.loc[np.isclose(subset["x"], x_val), "y"], errors="coerce"
-                )
+                ys = subset.loc[np.isclose(subset["x"], x_val), "y"]
                 ys = ys[np.isfinite(ys)]
+                if ys.empty:
+                    continue
                 data_per_x.append(list(ys.values))
                 positions.append(x_val + offsets[idx])
 
+            if not data_per_x:
+                continue
+
+            any_drawn = True
             if mode == "Box":
                 ax.boxplot(data_per_x, positions=positions, widths=width, manage_ticks=False)
             else:
@@ -693,6 +714,9 @@ class PlotPanel(ttk.Frame):
                     showextrema=True,
                     showmedians=True,
                 )
+
+        if not any_drawn:
+            raise ValueError("No finite values for distribution plot.")
 
     def _collect_ordering_ticks(self, work: pd.DataFrame) -> list[tuple[float, str]]:
         ticks: list[tuple[float, str]] = []
@@ -729,25 +753,35 @@ class PlotPanel(ttk.Frame):
         self.figure.savefig(path, bbox_inches="tight", dpi=200)
 
     def _export_group_stats(self) -> None:
-        if self._current_xy is None or self._current_xy.empty:
-            messagebox.showinfo("Export Group Stats", "Nothing to export.")
-            return
-        mode = (self.dist_mode.get() or "None").strip()
-        if mode in {"Mean±SEM", "Mean±Std", "95% CI"}:
-            grouped = self._compute_group_stats(self._current_xy, mode=mode)
-            if grouped is None:
-                grouped = pd.DataFrame()
+        dist_mode = (self.dist_mode.get() or "None").strip()
+
+        if dist_mode in {"Mean±SEM", "Mean±Std", "95% CI"}:
+            if self._current_xy is None or self._current_xy.empty:
+                messagebox.showinfo("Export Group Stats", "Plot data before exporting statistics.")
+                return
+            grouped = self._compute_group_stats(self._current_xy, mode=dist_mode)
+            if grouped is None or grouped.empty:
+                messagebox.showinfo(
+                    "Export Group Stats",
+                    f"No grouped statistics available for {dist_mode}.",
+                )
+                return
+            export_df = grouped
         else:
+            if self._current_xy is None or self._current_xy.empty:
+                messagebox.showinfo("Export Group Stats", "Plot data before exporting statistics.")
+                return
             renamed = self._current_xy.rename(columns={"__group__": "tag"})
-            grouped = compute_error_table(renamed, mode="SEM")
-        if grouped.empty:
-            messagebox.showinfo("Export Group Stats", "No grouped statistics available.")
-            return
-        self._last_group_stats = grouped.copy()
+            export_df = compute_error_table(renamed, mode="SEM")
+            if export_df is None or export_df.empty:
+                messagebox.showinfo("Export Group Stats", "No grouped statistics available.")
+                return
+            self._last_group_stats = export_df.copy()
+
         path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
         if not path:
             return
-        grouped.to_csv(path, index=False)
+        export_df.to_csv(path, index=False)
 
     def _export_intersections(self) -> None:
         if self.intersections_box.size() == 0:

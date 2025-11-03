@@ -33,6 +33,11 @@ def test_session_roundtrip_dict() -> None:
         "x_limits": (0.0, 10.0),
         "y_limits": (None, None),
     }
+    session.selection_state = {
+        "mode": "file",
+        "aggregator": "mean",
+        "picks": ["a"],
+    }
 
     payload = session_to_dict(session)
     restored = session_from_dict(payload)
@@ -51,6 +56,7 @@ def test_session_roundtrip_dict() -> None:
     assert restored.literature_fit == session.literature_fit
     assert restored.intersections == session.intersections
     assert restored.plot_config == session.plot_config
+    assert restored.selection_state == session.selection_state
 
 
 def test_session_from_dict_requires_ordering() -> None:

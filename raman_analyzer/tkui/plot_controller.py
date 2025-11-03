@@ -187,11 +187,11 @@ class PlotController:
         style = {"s": 36, "marker": "x", "linewidths": 1.0, "zorder": 4}
         if style_kwargs:
             style.update(style_kwargs)
-        scatter = self.ax.scatter(xs, ys, label=label, **style)
-        self._cross_markers.append(scatter)
-        # Leave legend handling to the caller so overlays can opt-in explicitly.
+        sc = self.ax.scatter(xs, ys, label=label, **style)
+        self._cross_markers.append(sc)
+        # leave legend handling to caller
         self.canvas.draw_idle()
-        return scatter
+        return sc
 
     # ----------------------------------------------------------------- helpers
     def _update_legend(self) -> None:
