@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import (
+    filedialog,
+    messagebox,
+    simpledialog,
+    ttk,
+)
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -93,13 +98,30 @@ class TkRamanApp:
         self.selection_panel.pack(side="top", fill="both", expand=True)
 
         # Plot panel: controls go into 'controls', canvas is the frame we add below.
-        # (Idempotent: only create once.)
+        # (No implicit defaults; users must choose metrics explicitly.)
         if not hasattr(self, "plot_panel"):
             self.plot_panel = PlotPanel(
                 right_container,
                 session=self.session,
                 controls_parent=controls,
             )
+
+            # Inject a tag lookup callback so PlotPanel can map file_ids → tag strings.
+            def _lookup_tags(file_ids: list[str]) -> list[str]:
+                return [self.session.file_to_tag.get(fid, "") for fid in file_ids]
+
+            if hasattr(self.plot_panel, "set_tag_lookup"):
+                self.plot_panel.set_tag_lookup(_lookup_tags)
+
+            # Inject an optional inverse-solve provider: df, inv_y_name -> pd.Series (x values)
+            # NOTE: Strict wiring — if not available in session, we do not fabricate anything.
+            def _inverse_x_provider(df, inv_y_name: str):
+                if hasattr(self.session, "inverse_solve_x_series"):
+                    return self.session.inverse_solve_x_series(df, inv_y_name)
+                return None
+
+            if hasattr(self.plot_panel, "set_inverse_x_provider"):
+                self.plot_panel.set_inverse_x_provider(_inverse_x_provider)
         right_split.add(self.plot_panel, weight=4)
 
         self.root.geometry("1280x800")
@@ -115,10 +137,14 @@ class TkRamanApp:
         if not paths:
             return
 
+        existing_files = set(self.session.list_files())
+        existing_tables = set(getattr(self.session, "raw_tables", {}).keys())
         combined: List[pd.DataFrame] = []
         tables: Dict[str, pd.DataFrame] = {}
-        just_loaded_files: List[str] = []
         for path in paths:
+            file_key = str(path)
+            if file_key in existing_tables:
+                continue
             try:
                 df = pd.read_csv(path)
             except Exception as exc:  # pragma: no cover - interactive warning
@@ -127,44 +153,89 @@ class TkRamanApp:
 
             if "file" not in df.columns:
                 df = df.copy()
-                df["file"] = str(path)
+                df["file"] = file_key
 
             combined.append(df)
-            tables[str(path)] = df.copy()
-            just_loaded_files.append(str(path))
+            tables[file_key] = df.copy()
+            existing_tables.add(file_key)
 
         if not combined:
             return
 
         merged = pd.concat(combined, ignore_index=True)
-        self.session.set_raw_data(merged)
         self.session.set_raw_tables(tables)
+        self.session.set_raw_data(merged)
 
-        files = (
-            merged["file"].astype(str).dropna().unique().tolist()
-            if "file" in merged.columns
-            else []
+        all_files = self.session.list_files()
+        just_loaded_files = [fid for fid in all_files if fid not in existing_files]
+
+        current_files: List[str] = []
+        if hasattr(self.file_list, "get_files"):
+            current_files = self.file_list.get_files()
+        combined_listing = list(current_files)
+        for fid in all_files:
+            if fid not in combined_listing:
+                combined_listing.append(fid)
+        self.file_list.set_files(combined_listing)
+
+        # --- Batch tag (optional, asked for any count >=1)
+        preset_tag = simpledialog.askstring(
+            "Apply tag to imported files (optional)",
+            "Enter a tag (alphanumeric) to apply to all imported files.\n"
+            "(Leave blank to skip.)",
+            parent=self.root,
         )
-        self.file_list.set_files(files)
+        if preset_tag:
+            for fid in just_loaded_files:
+                self.session.set_tag(fid, str(preset_tag).strip())
+            # refresh UI
+            self.selection_panel.set_context(self.session.file_to_tag)
+            self.file_list.refresh()
 
-        # --- OPTIONAL batch tag for this import batch (non-blocking)
-        if len(just_loaded_files) > 1:
-            preset_tag = simpledialog.askstring(
-                "Apply tag to imported files (optional)",
-                "Enter a sample tag to apply to all **imported in this batch** (leave blank to skip):",
+        # --- Ordering (strict; no fallbacks)
+        if len(just_loaded_files) == 1:
+            raw_value = simpledialog.askstring(
+                "Ordering",
+                "Enter an Ordering value (numeric) for the imported file.\n"
+                "(Leave blank to skip; no defaults will be applied.)",
                 parent=self.root,
             )
-            if preset_tag:
-                for fid in just_loaded_files:
-                    self.session.set_tag(fid, preset_tag)
-                # refresh UI
-                self.selection_panel.set_context(self.session.file_to_tag)
-                self.file_list.refresh()
-
-        if files:
-            self.file_list.select_file(files[0])
+            if raw_value:
+                try:
+                    value = float(raw_value)
+                    self.session.update_ordering({just_loaded_files[0]: value})
+                    self.file_list.refresh()
+                except Exception:
+                    messagebox.showwarning("Ordering", "Ordering must be numeric. Nothing applied.")
         else:
-            self._on_file_selection_changed([])
+            if just_loaded_files:
+                raw_list = simpledialog.askstring(
+                    "Ordering (multiple files)",
+                    "Enter comma-separated numeric Ordering values for each imported file, in the same order they were selected.\n"
+                    f"Count must be exactly {len(just_loaded_files)}.\n"
+                    "(Leave blank to skip; no defaults will be applied.)",
+                    parent=self.root,
+                )
+                if raw_list:
+                    parts = [p.strip() for p in raw_list.split(",")]
+                    if len(parts) != len(just_loaded_files):
+                        messagebox.showwarning(
+                            "Ordering",
+                            f"Expected {len(just_loaded_files)} values; got {len(parts)}. Nothing applied.",
+                        )
+                    else:
+                        try:
+                            values = [float(p) for p in parts]
+                            mapping = {fid: val for fid, val in zip(just_loaded_files, values)}
+                            self.session.update_ordering(mapping)
+                            self.file_list.refresh()
+                        except Exception:
+                            messagebox.showwarning("Ordering", "All Ordering values must be numeric. Nothing applied.")
+
+        if just_loaded_files:
+            self.file_list.select_file(just_loaded_files[0])
+        else:
+            self.file_list.refresh()
 
         self.selection_panel.set_context(self.session.file_to_tag)
         self._refresh_plot_metrics()
@@ -328,6 +399,7 @@ class TkRamanApp:
                 self.session.update_metric(b_name, safe_b)
         except Exception:  # pragma: no cover - defensive
             pass
+        # Keep plot/inverse metric menus in sync with latest selection outputs.
         self._refresh_plot_metrics()
 
     def _on_autopopulate(
@@ -336,9 +408,7 @@ class TkRamanApp:
         if scope == "All":
             raw = self.session.raw_df
             if raw is not None and not raw.empty and "file" in raw.columns:
-                files = (
-                    raw["file"].astype(str).dropna().unique().tolist()
-                )
+                files = raw["file"].astype(str).dropna().unique().tolist()
             else:
                 files = []
         else:
@@ -352,15 +422,19 @@ class TkRamanApp:
             )
             return
 
+        added = 0
+        failures: list[str] = []
         for file_id in files:
             table = self.session.get_raw_table(file_id)
             if table is None or table.empty:
+                failures.append(f"{file_id}: no table")
                 continue
             try:
                 r_idx = max(0, row1 - 1)
                 c_idx = max(0, col1 - 1)
                 value = float(table.iloc[r_idx, c_idx])
             except Exception:
+                failures.append(f"{file_id}: non-numeric or out-of-bounds")
                 continue
             tag = self.session.file_to_tag.get(file_id, "")
             self.selection_panel.add_pick(
@@ -370,6 +444,20 @@ class TkRamanApp:
                 value,
                 target=target_key,
                 tag=tag,
+            )
+            added += 1
+
+        if added == 0:
+            messagebox.showwarning(
+                "Auto-populate",
+                "No values added." + ("\n" + "\n".join(failures) if failures else ""),
+            )
+            return
+
+        if failures:
+            messagebox.showwarning(
+                "Auto-populate",
+                "Auto-populate completed with issues:\n" + "\n".join(failures),
             )
 
     # Keep PlotPanel’s X/Y menus current with session metrics/results

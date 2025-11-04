@@ -248,6 +248,11 @@ class FileList(ttk.Frame):
                 self.tree.see(file_id)
                 break
 
+    def get_files(self) -> List[str]:
+        """Return the ordered list of file identifiers currently displayed."""
+
+        return list(self._files)
+
     def refresh(self) -> None:
         """Refresh displayed Tag/X values from the session."""
 
