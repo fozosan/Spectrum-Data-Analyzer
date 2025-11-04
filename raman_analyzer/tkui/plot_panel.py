@@ -75,7 +75,14 @@ class PlotPanel(ttk.Frame):
         self.inv_params_frame = ttk.Frame(inv_box)
         self.inv_params_frame.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(4, 2))
         self.inv_param_vars: dict[str, tk.StringVar] = {}
-        self.inv_combo.bind("<<ComboboxSelected>>", lambda *_: self._refresh_inverse_params())
+        # Remember previous model's values when switching; then rebuild UI for new model
+        self._last_inv_model = self.inv_model.get()
+        self.inv_combo.bind("<<ComboboxSelected>>", self._on_inverse_model_changed)
+        # Initialize params from session memory (if any)
+        saved_model = getattr(self.session, "inv_model_last", None)
+        if saved_model in ("Linear", "Quadratic", "Power"):
+            self.inv_model.set(saved_model)
+        self._last_inv_model = self.inv_model.get()
         self._refresh_inverse_params()
 
         ttk.Label(inv_box, text="Y metric").grid(row=2, column=0, sticky="w")
@@ -104,6 +111,18 @@ class PlotPanel(ttk.Frame):
         ttk.Button(inv_box, text="Solve", command=self._on_inverse_solve).grid(
             row=2, column=5, padx=6, pady=2, sticky="w"
         )
+
+        # Restore last-used source/plot selections if available
+        saved_source = getattr(self.session, "inv_y_source_last", None)
+        if saved_source in ("Points", "Group mean"):
+            self.inv_y_source.set(saved_source)
+            try:
+                self.inv_source_combo.set(saved_source)
+            except Exception:
+                pass
+        saved_plot_flag = getattr(self.session, "inv_plot_on_chart_last", None)
+        if isinstance(saved_plot_flag, bool):
+            self.inv_plot_on_chart.set(bool(saved_plot_flag))
 
         self.inverse_table = ttk.Treeview(inv_box, columns=("label", "y", "x1", "x2"), show="headings", height=6)
         for column, width in (("label", 200), ("y", 110), ("x1", 120), ("x2", 120)):
@@ -275,6 +294,185 @@ class PlotPanel(ttk.Frame):
         self._fit_fn = None
         self._fit_label: str | None = None
 
+    def _refresh_inverse_params(self) -> None:
+        # Rebuild the inverse-parameter inputs based on the current model,
+        # restoring last-used params for this model from session memory.
+        previous = {name: var.get() for name, var in getattr(self, "inv_param_vars", {}).items()}
+        # Clear the frame
+        for child in self.inv_params_frame.winfo_children():
+            child.destroy()
+        # Reset storage
+        self.inv_param_vars = {}
+
+        model = self.inv_model.get()
+        # Pull stored params for this model (session-level, flat)
+        stored = {}
+        if hasattr(self.session, "get_inv_params"):
+            try:
+                stored = dict(self.session.get_inv_params(model))
+            except Exception:
+                stored = {}
+        # Compose defaults preferring stored->previous->hard defaults
+        defaults = {
+            "Linear": {
+                "m": stored.get("m", previous.get("m", "1.0")),
+                "b": stored.get("b", previous.get("b", "0.0")),
+            },
+            "Quadratic": {
+                "a": stored.get("a", previous.get("a", "1.0")),
+                "b": stored.get("b", previous.get("b", "0.0")),
+                "c": stored.get("c", previous.get("c", "0.0")),
+            },
+            "Power": {
+                "a": stored.get("a", previous.get("a", "1.0")),
+                "b": stored.get("b", previous.get("b", "1.0")),
+            },
+        }
+        examples = {
+            "Linear": "y = m·x + b",
+            "Quadratic": "y = a·x² + b·x + c",
+            "Power": "y = a·xᵇ (a>0)",
+        }
+        # Update example text if present
+        if hasattr(self, "inv_example"):
+            self.inv_example.configure(text=examples.get(model, ""))
+
+        params = defaults.get(model, {})
+        row = 0
+        for name, default_value in params.items():
+            ttk.Label(self.inv_params_frame, text=name).grid(row=row, column=0, sticky="w")
+            var = tk.StringVar(value=default_value)
+            entry = ttk.Entry(self.inv_params_frame, textvariable=var, width=12)
+            entry.grid(row=row, column=1, sticky="w", padx=(6, 12), pady=2)
+            self.inv_param_vars[name] = var
+            row += 1
+
+        for col in range(2):
+            self.inv_params_frame.columnconfigure(col, weight=0)
+
+    def _save_inverse_params_for(self, model: str) -> None:
+        if not model or not hasattr(self.session, "set_inv_params"):
+            return
+        params = {}
+        for name, var in getattr(self, "inv_param_vars", {}).items():
+            params[name] = var.get()
+        try:
+            self.session.set_inv_params(model, params)
+        except Exception:
+            pass
+
+    def _on_inverse_model_changed(self, *_):
+        # Save params of the *previous* model before switching UI
+        prev = getattr(self, "_last_inv_model", None)
+        if prev:
+            self._save_inverse_params_for(prev)
+        # Update "last" and persist model choice
+        curr = self.inv_model.get()
+        self._last_inv_model = curr
+        if hasattr(self.session, "inv_model_last"):
+            self.session.inv_model_last = curr
+        # Rebuild inputs with stored params for the new model
+        self._refresh_inverse_params()
+
+    def _on_inverse_solve(self) -> None:
+        for item_id in self.inverse_table.get_children():
+            self.inverse_table.delete(item_id)
+
+        try:
+            params = {name: float(var.get()) for name, var in self.inv_param_vars.items()}
+        except (TypeError, ValueError):
+            messagebox.showwarning("Inverse", "All parameters must be numeric.")
+            return
+        # Persist current model & params
+        if hasattr(self.session, "set_inv_params"):
+            try:
+                self.session.set_inv_params(self.inv_model.get(), params)
+                self.session.inv_model_last = self.inv_model.get()
+            except Exception:
+                pass
+
+        inverse_fn = self._inverse_for(self.inv_model.get(), params)
+        if inverse_fn is None:
+            messagebox.showwarning("Inverse", "Unsupported model or invalid parameters.")
+            return
+
+        df = getattr(self.session, "results_df", None)
+        if df is None or df.empty:
+            messagebox.showinfo("Inverse", "No results available. Compute selections first.")
+            return
+
+        y_metric = (self.inv_y_metric.get() or "").strip()
+        if not y_metric:
+            messagebox.showwarning("Inverse", "Choose a Y metric.")
+            return
+        # Persist last-used Y metric/source/plot flag
+        try:
+            self.session.inv_y_metric_last = y_metric
+            if hasattr(self, "inv_y_source"):
+                self.session.inv_y_source_last = self.inv_y_source.get()
+            if hasattr(self, "inv_plot_on_chart"):
+                self.session.inv_plot_on_chart_last = bool(self.inv_plot_on_chart.get())
+        except Exception:
+            pass
+
+        work = df.copy()
+        work["y"] = self._resolve_axis(y_metric, work)
+        work = work[[col for col in ("file", "tag", "y") if col in work.columns]]
+        work = work.replace([np.inf, -np.inf], np.nan).dropna(subset=["y"])
+        if work.empty:
+            messagebox.showinfo("Inverse", f"No finite values for {y_metric}.")
+            return
+
+        results: list[tuple[str, float, float, float]] = []
+        if self.inv_y_source.get() == "Group mean":
+            tmp = work.copy()
+            if "tag" in tmp.columns:
+                tmp["__group__"] = tmp["tag"].astype(str)
+            else:
+                tmp["__group__"] = "All"
+            means = tmp.groupby("__group__")["y"].mean().reset_index()
+            for _, row in means.iterrows():
+                y_val = float(row["y"])
+                label = str(row["__group__"]) or "All"
+                sols = [float(val) for val in inverse_fn(y_val) if isfinite(val)]
+                x1 = sols[0] if len(sols) >= 1 else float("nan")
+                x2 = sols[1] if len(sols) >= 2 else float("nan")
+                results.append((label, y_val, x1, x2))
+        else:
+            for _, row in work.iterrows():
+                y_val = float(row["y"])
+                label = str(row.get("tag") or row.get("file") or "") or "(unnamed)"
+                sols = [float(val) for val in inverse_fn(y_val) if isfinite(val)]
+                x1 = sols[0] if len(sols) >= 1 else float("nan")
+                x2 = sols[1] if len(sols) >= 2 else float("nan")
+                results.append((label, y_val, x1, x2))
+
+        if not results:
+            self.inverse_table.insert("", "end", values=("—", "—", "—", "—"))
+            return
+
+        xs_to_plot: list[float] = []
+        ys_to_plot: list[float] = []
+        for label, y_val, x1, x2 in results:
+            display = (
+                label,
+                f"{y_val:.6g}",
+                "" if not isfinite(x1) else f"{x1:.6g}",
+                "" if not isfinite(x2) else f"{x2:.6g}",
+            )
+            self.inverse_table.insert("", "end", values=display)
+            for candidate in (x1, x2):
+                if isfinite(candidate):
+                    xs_to_plot.append(candidate)
+                    ys_to_plot.append(y_val)
+
+        if self.inv_plot_on_chart.get() and xs_to_plot:
+            self.add_annotation_points(
+                np.asarray(xs_to_plot, dtype=float),
+                np.asarray(ys_to_plot, dtype=float),
+                label="Inverse solutions",
+            )
+
     # ------------------------------------------------------------------ public API
     def set_tag_lookup(self, fn: Callable[[list[str]], list[str]]) -> None:
         self._tag_lookup = fn
@@ -325,6 +523,14 @@ class PlotPanel(ttk.Frame):
             if current not in pool:
                 var.set("")
                 combo.set("")
+        # Restore last-used inverse Y metric if empty and available
+        last_inv_y = getattr(self.session, "inv_y_metric_last", None)
+        if (self.inv_y_metric.get() == "") and last_inv_y and (last_inv_y in inv_values):
+            self.inv_y_metric.set(last_inv_y)
+            try:
+                self.inv_y_combo.set(last_inv_y)
+            except Exception:
+                pass
 
     def _resolve_inverse_x_series(self, df: pd.DataFrame) -> pd.Series:
         # Import-only policy: require a precomputed column named exactly INVERSE_X_LABEL.
@@ -799,6 +1005,24 @@ class PlotPanel(ttk.Frame):
         return sorted(ticks, key=lambda item: item[0])
 
     # ------------------------------------------------------------------ exports
+    def _export_inverse(self) -> None:
+        rows = [self.inverse_table.item(iid)["values"] for iid in self.inverse_table.get_children()]
+        if not rows:
+            messagebox.showinfo("Export Solutions", "Nothing to export.")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        pd.DataFrame(rows, columns=["label", "y", "x1", "x2"]).to_csv(path, index=False)
+
+    def _copy_inverse(self) -> None:
+        rows = [self.inverse_table.item(iid)["values"] for iid in self.inverse_table.get_children()]
+        if not rows:
+            messagebox.showinfo("Copy", "Nothing to copy.")
+            return
+        df = pd.DataFrame(rows, columns=["label", "y", "x1", "x2"])
+        self._copy_text(df.to_csv(index=False))
+
     def _export_xy(self) -> None:
         if self._current_xy is None or self._current_xy.empty:
             messagebox.showinfo("Export XY", "Nothing to export.")
