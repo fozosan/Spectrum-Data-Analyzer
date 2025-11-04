@@ -23,6 +23,8 @@ from raman_analyzer.analysis.trendlines import (
 from raman_analyzer.tkui.plot_controller import PlotController
 
 
+INVERSE_X_LABEL = "Inverse Solve X"
+
 def _safe_float(value: object) -> float:
     try:
         return float(value)
@@ -44,6 +46,9 @@ class PlotPanel(ttk.Frame):
         self.session = session
         self._pending_annotations: list[Tuple[np.ndarray, np.ndarray, str]] = []
         self._last_group_stats: Optional[pd.DataFrame] = None
+        self._tag_lookup: Optional[Callable[[list[str]], list[str]]] = None
+        self._inverse_x_provider: Optional[Callable[[pd.DataFrame, str], Optional[pd.Series]]] = None
+        self._buttons: dict[str, ttk.Button] = {}
 
         # --------------------------- controls ---------------------------
         self.controls_container = ttk.Frame(controls_parent)
@@ -159,9 +164,20 @@ class PlotPanel(ttk.Frame):
         self.dist_combo.grid(row=0, column=9, padx=4, pady=2, sticky="w")
 
         ttk.Button(control_box, text="Plot", command=self._on_plot).grid(row=0, column=10, padx=6, pady=2, sticky="e")
+        clear_btn = ttk.Button(control_box, text="Clear Plot", command=self._on_clear_plot)
+        clear_btn.grid(row=0, column=11, padx=6, pady=2, sticky="w")
+        self._buttons["clear_plot"] = clear_btn
+
+        self.use_tag_text_for_ordering = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            control_box,
+            text="Use Tag (text) instead of Ordering",
+            variable=self.use_tag_text_for_ordering,
+            command=self._on_toggle_tag_text_for_ordering,
+        ).grid(row=1, column=0, columnspan=11, sticky="w", padx=4, pady=(6, 2))
 
         label_row = ttk.Frame(control_box)
-        label_row.grid(row=1, column=0, columnspan=11, sticky="ew", pady=(4, 0))
+        label_row.grid(row=2, column=0, columnspan=11, sticky="ew", pady=(4, 0))
         ttk.Label(label_row, text="X label").pack(side="left")
         self.x_label_entry = ttk.Entry(label_row, textvariable=self.x_label_text, width=20)
         self.x_label_entry.pack(side="left", padx=(4, 12))
@@ -170,7 +186,7 @@ class PlotPanel(ttk.Frame):
         self.y_label_entry.pack(side="left", padx=(4, 0))
 
         range_row = ttk.Frame(control_box)
-        range_row.grid(row=2, column=0, columnspan=11, sticky="ew", pady=(4, 0))
+        range_row.grid(row=3, column=0, columnspan=11, sticky="ew", pady=(4, 0))
         ttk.Checkbutton(
             range_row,
             text="Auto X range",
@@ -201,7 +217,7 @@ class PlotPanel(ttk.Frame):
         self.y_max_entry.pack(side="left")
 
         export_row = ttk.Frame(control_box)
-        export_row.grid(row=3, column=0, columnspan=11, sticky="w", pady=(4, 0))
+        export_row.grid(row=4, column=0, columnspan=11, sticky="w", pady=(4, 0))
         ttk.Button(export_row, text="Export XY", command=self._export_xy).pack(side="left", padx=2)
         ttk.Button(export_row, text="Copy XY", command=self._copy_xy).pack(side="left", padx=2)
         ttk.Button(export_row, text="Export Plot (PNG)", command=self._export_plot).pack(side="left", padx=2)
@@ -210,8 +226,8 @@ class PlotPanel(ttk.Frame):
 
         self._update_range_state()
 
-        # -------------------- fit / intersections --------------------
-        fit_box = ttk.LabelFrame(self.controls_container, text="Trendline & Intersections")
+        # -------------------- fit (Trendline only) --------------------
+        fit_box = ttk.LabelFrame(self.controls_container, text="Trendline")
         fit_box.pack(side="top", fill="x", padx=6, pady=(0, 6))
 
         self.fit_model = tk.StringVar(value="Linear")
@@ -234,48 +250,14 @@ class PlotPanel(ttk.Frame):
         self.fit_summary.grid(row=1, column=0, columnspan=5, sticky="ew", padx=2, pady=2)
         self.fit_summary.configure(state="disabled")
 
-        self.intersections_box = tk.Listbox(fit_box, height=5)
-        self.intersections_box.grid(row=2, column=0, columnspan=5, sticky="ew", padx=2, pady=(2, 6))
-        ttk.Button(fit_box, text="Export Intersections", command=self._export_intersections).grid(
-            row=3, column=0, padx=2, pady=2, sticky="w"
+        residual_buttons = ttk.Frame(fit_box)
+        residual_buttons.grid(row=2, column=0, columnspan=5, sticky="w", padx=2, pady=(2, 2))
+        ttk.Button(residual_buttons, text="Export Residuals", command=self._export_residuals).pack(
+            side="left", padx=2
         )
-        ttk.Button(fit_box, text="Export Residuals", command=self._export_residuals).grid(
-            row=3, column=1, padx=2, pady=2, sticky="w"
+        ttk.Button(residual_buttons, text="Copy Residuals", command=self._copy_residuals).pack(
+            side="left", padx=2
         )
-        ttk.Button(fit_box, text="Copy Intersections", command=self._copy_intersections).grid(
-            row=3, column=2, padx=2, pady=2, sticky="w"
-        )
-        ttk.Button(fit_box, text="Copy Residuals", command=self._copy_residuals).grid(
-            row=3, column=3, padx=2, pady=2, sticky="w"
-        )
-
-        literature_box = ttk.LabelFrame(fit_box, text="Literature Overlay")
-        literature_box.grid(row=4, column=0, columnspan=5, sticky="ew", padx=2, pady=(6, 2))
-        self.lit_model = tk.StringVar(value="Linear")
-        ttk.Label(literature_box, text="Model").grid(row=0, column=0, sticky="w")
-        self.lit_combo = ttk.Combobox(
-            literature_box,
-            textvariable=self.lit_model,
-            state="readonly",
-            width=16,
-            values=("Linear", "Quadratic", "Power"),
-        )
-        self.lit_combo.current(0)
-        self.lit_combo.grid(row=0, column=1, sticky="w", padx=4, pady=2)
-        self.lit_example = ttk.Label(literature_box, text="y = m·x + b", foreground="#555555")
-        self.lit_example.grid(row=0, column=2, sticky="w", padx=4)
-        self.lit_params_frame = ttk.Frame(literature_box)
-        self.lit_params_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 2))
-        self.lit_param_vars: dict[str, tk.StringVar] = {}
-        self.lit_combo.bind("<<ComboboxSelected>>", lambda *_: self._refresh_literature_params())
-        self._refresh_literature_params()
-        literature_buttons = ttk.Frame(literature_box)
-        literature_buttons.grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 2))
-        ttk.Button(literature_buttons, text="Add curve", command=self._overlay_literature).pack(side="left", padx=2)
-        ttk.Button(literature_buttons, text="Clear", command=self._clear_literature).pack(side="left", padx=2)
-        ttk.Button(literature_buttons, text="Intersections", command=self._on_intersections).pack(side="left", padx=2)
-        for column in range(3):
-            literature_box.columnconfigure(column, weight=1)
 
         # --------------------------- figure ---------------------------
         self.figure = Figure(figsize=(6, 4), dpi=120)
@@ -292,12 +274,20 @@ class PlotPanel(ttk.Frame):
         self._fit: dict[str, object] | None = None
         self._fit_fn = None
         self._fit_label: str | None = None
-        self._literature: list[dict[str, object]] = []
 
     # ------------------------------------------------------------------ public API
-    def set_metrics_for_xy(self, names: Sequence[str]) -> None:
+    def set_tag_lookup(self, fn: Callable[[list[str]], list[str]]) -> None:
+        self._tag_lookup = fn
+
+    def set_inverse_x_provider(
+        self, fn: Callable[[pd.DataFrame, str], Optional[pd.Series]]
+    ) -> None:
+        # Retained for compatibility, but plotting no longer calls providers; import-only policy.
+        self._inverse_x_provider = fn
+
+    def _metric_choices_base(self, names: Sequence[str]) -> Tuple[str, ...]:
         metrics = [str(name) for name in names if name]
-        metric_set = {m for m in metrics}
+        metric_set = set(metrics)
 
         derived: list[str] = []
         if {"Selection A", "Selection B"} <= metric_set:
@@ -313,55 +303,49 @@ class PlotPanel(ttk.Frame):
         choices: list[str] = ["Ordering", "Tag (numeric)"]
         choices.extend(metrics)
         choices.extend(derived)
+        choices.append(INVERSE_X_LABEL)
+        return tuple(choices)
 
-        values = tuple(choices)
+    def set_metrics_for_xy(self, names: Sequence[str]) -> None:
+        values = self._metric_choices_base(names)
+        inv_values = tuple(v for v in values if v != INVERSE_X_LABEL)
+
         self.x_combo["values"] = values
         self.y_combo["values"] = values
-        self.inv_y_combo["values"] = values
+        self.inv_y_combo["values"] = inv_values
 
-        def _ensure_selection(var: tk.StringVar, combo: ttk.Combobox, fallbacks: Sequence[str]) -> None:
+        # Strict: clear selections that are no longer available (no fallbacks).
+        # X and Y validate against full 'values'; inverse-Y validates against 'inv_values'.
+        for var, combo, pool in (
+            (self.x_field, self.x_combo, values),
+            (self.y_field, self.y_combo, values),
+            (self.inv_y_metric, self.inv_y_combo, inv_values),
+        ):
             current = var.get()
-            if current in values:
-                combo.current(values.index(current))
-                return
-            for candidate in fallbacks:
-                if candidate in values:
-                    var.set(candidate)
-                    combo.current(values.index(candidate))
-                    return
-            var.set("")
-            combo.set("")
+            if current not in pool:
+                var.set("")
+                combo.set("")
 
-        x_fallbacks = [
-            self.x_field.get(),
-            "Ordering",
-            "Tag (numeric)",
-            *metrics,
-            *derived,
-        ]
-        _ensure_selection(self.x_field, self.x_combo, x_fallbacks)
-        x_choice = self.x_field.get()
-
-        preferred_y = [name for name in ("Selection A", "Selection B", *derived) if name in values]
-        y_fallbacks = [
-            self.y_field.get(),
-            *preferred_y,
-            *[item for item in values if item not in {"Ordering", "Tag (numeric)", x_choice}],
-            *[item for item in ("Ordering", "Tag (numeric)") if item != x_choice],
-        ]
-        _ensure_selection(self.y_field, self.y_combo, y_fallbacks)
-
-        inv_preferred = [name for name in ("Selection A", "Selection B", *derived) if name in values]
-        inv_fallbacks = [
-            self.inv_y_metric.get(),
-            *inv_preferred,
-            *[item for item in values if item not in {"Ordering", "Tag (numeric)"}],
-            *[item for item in ("Ordering", "Tag (numeric)")],
-        ]
-        _ensure_selection(self.inv_y_metric, self.inv_y_combo, inv_fallbacks)
+    def _resolve_inverse_x_series(self, df: pd.DataFrame) -> pd.Series:
+        # Import-only policy: require a precomputed column named exactly INVERSE_X_LABEL.
+        if INVERSE_X_LABEL not in df.columns:
+            messagebox.showwarning(
+                "Plot",
+                f"{INVERSE_X_LABEL} is not available. Compute and save it first.",
+            )
+            raise RuntimeError("Inverse Solve X column missing.")
+        return pd.to_numeric(df[INVERSE_X_LABEL], errors="coerce")
 
     def set_metrics(self, names: Sequence[str]) -> None:
         self.set_metrics_for_xy(names)
+
+    def _on_toggle_tag_text_for_ordering(self) -> None:
+        # No automatic plotting; users must replot explicitly after toggling.
+        return
+
+    def _on_clear_plot(self) -> None:
+        self.figure.clf()
+        self.canvas.draw_idle()
 
     def _update_range_state(self) -> None:
         state_x = "disabled" if self.auto_x.get() else "normal"
@@ -371,6 +355,51 @@ class PlotPanel(ttk.Frame):
         for widget in (self.y_min_entry, self.y_max_entry):
             widget.configure(state=state_y)
 
+    def _coerce_x_if_use_tag_text(
+        self, df: pd.DataFrame, x_choice: str, x_series: pd.Series
+    ) -> pd.Series:
+        if not getattr(self, "use_tag_text_for_ordering", None):
+            return x_series
+        if not self.use_tag_text_for_ordering.get():
+            return x_series
+        if str(x_choice) != "Ordering":
+            return x_series
+
+        if "file" not in df.columns:
+            messagebox.showwarning(
+                "Plot",
+                "Cannot use Tag (text) for X because 'file' column is missing.",
+            )
+            raise RuntimeError("Missing 'file' column for tag mapping.")
+
+        if self._tag_lookup is None:
+            messagebox.showwarning(
+                "Plot",
+                "Cannot use Tag (text) for X because tag lookup is not available.",
+            )
+            raise RuntimeError("Tag lookup callback not set.")
+
+        file_ids = [str(f) for f in df["file"].tolist()]
+        tags = self._tag_lookup(file_ids)
+        if len(tags) != len(file_ids):
+            messagebox.showwarning(
+                "Plot",
+                "Tag lookup did not return the expected number of entries.",
+            )
+            raise RuntimeError("Tag lookup length mismatch.")
+        clean_tags = ["" if t is None else str(t).strip() for t in tags]
+        if any(tag == "" for tag in clean_tags):
+            messagebox.showwarning(
+                "Plot",
+                "Tag is missing for one or more rows; cannot replace Ordering with Tag (text).",
+            )
+            raise RuntimeError("Missing tag values.")
+
+        df["__tag_text_for_ordering__"] = clean_tags
+        df["__x_numeric__"] = pd.to_numeric(x_series, errors="coerce")
+        df["tag"] = clean_tags
+        return pd.Series(clean_tags, index=df.index)
+
     # ------------------------------------------------------------------ plotting helpers
     def _build_xy(self, x_label: str, y_label: str) -> pd.DataFrame | None:
         df = self.session.results_df
@@ -378,13 +407,28 @@ class PlotPanel(ttk.Frame):
             return None
 
         work = df.copy()
-        work["x"] = self._resolve_axis(x_label, work)
-        work["y"] = self._resolve_axis(y_label, work)
+        try:
+            x_source = self._resolve_axis(x_label, work)
+        except RuntimeError:
+            return None
+        try:
+            coerced = self._coerce_x_if_use_tag_text(work, x_label, x_source)
+        except RuntimeError:
+            return None
+        work["x"] = coerced
+        if "__x_numeric__" not in work.columns:
+            work["__x_numeric__"] = pd.to_numeric(x_source, errors="coerce")
+        try:
+            work["y"] = self._resolve_axis(y_label, work)
+        except RuntimeError:
+            return None
         work = work.replace([np.inf, -np.inf], np.nan)
-        cols = ["file", "tag", "x", "y"]
+        cols = ["file", "tag", "x", "y", "__x_numeric__", "__tag_text_for_ordering__"]
         existing_cols = [c for c in cols if c in work.columns]
         work = work[existing_cols]
         work = work.dropna(subset=["x", "y"])
+        if "__x_numeric__" in work.columns:
+            work = work.dropna(subset=["__x_numeric__"])
         if work.empty:
             return None
 
@@ -396,6 +440,8 @@ class PlotPanel(ttk.Frame):
         return work
 
     def _resolve_axis(self, label: str, work: pd.DataFrame) -> pd.Series:
+        if str(label) == INVERSE_X_LABEL:
+            return self._resolve_inverse_x_series(work)
         if label == "Ordering":
             mapping = dict(getattr(self.session, "ordering", {}) or {})
             files = work["file"] if "file" in work.columns else pd.Series(index=work.index, dtype=object)
@@ -466,6 +512,14 @@ class PlotPanel(ttk.Frame):
             return
 
         def _axis_available(label: str) -> bool:
+            if label == INVERSE_X_LABEL:
+                if INVERSE_X_LABEL in df.columns:
+                    return True
+                messagebox.showwarning(
+                    "Plot",
+                    f"{INVERSE_X_LABEL} is not available. Compute and save it first.",
+                )
+                return False
             if label in {"Ordering", "Tag (numeric)"}:
                 return True
             if label in self._derived_metrics:
@@ -473,11 +527,13 @@ class PlotPanel(ttk.Frame):
             return label in df.columns
 
         if not _axis_available(x_label):
-            messagebox.showinfo("Plot", f"No data available for X: {x_label}.")
+            if x_label != INVERSE_X_LABEL:
+                messagebox.showinfo("Plot", f"No data available for X: {x_label}.")
             return
 
         if not _axis_available(y_label):
-            messagebox.showinfo("Plot", f"No data available for Y: {y_label}.")
+            if y_label != INVERSE_X_LABEL:
+                messagebox.showinfo("Plot", f"No data available for Y: {y_label}.")
             return
 
         work = self._build_xy(x_label, y_label)
@@ -507,9 +563,16 @@ class PlotPanel(ttk.Frame):
             return
 
         series_entries: list[dict[str, object]] = []
+        numeric_col = "__x_numeric__" if "__x_numeric__" in work.columns else None
         for label, group_df in work.groupby("__group__"):
-            xs = group_df["x"].to_numpy(dtype=float)
-            ys = group_df["y"].to_numpy(dtype=float)
+            source = group_df[numeric_col] if numeric_col else group_df["x"]
+            xs = pd.to_numeric(source, errors="coerce").to_numpy(dtype=float)
+            ys = pd.to_numeric(group_df["y"], errors="coerce").to_numpy(dtype=float)
+            mask = np.isfinite(xs) & np.isfinite(ys)
+            xs = xs[mask]
+            ys = ys[mask]
+            if xs.size == 0 or ys.size == 0:
+                continue
             legend_label = None if label in ("", "All") else label
             series_entries.append({"x": xs, "y": ys, "label": legend_label})
 
@@ -527,7 +590,11 @@ class PlotPanel(ttk.Frame):
                 messagebox.showinfo("Plot", f"No grouped statistics available for {dist_mode}.")
             else:
                 for grp_label, grp_df in grouped.groupby("__group__"):
-                    xs = grp_df["x"].to_numpy(dtype=float)
+                    if "__x_numeric__" in grp_df.columns:
+                        xs_source = grp_df["__x_numeric__"]
+                    else:
+                        xs_source = grp_df["x"]
+                    xs = pd.to_numeric(xs_source, errors="coerce").to_numpy(dtype=float)
                     means = grp_df["mean"].to_numpy(dtype=float)
                     yerr = grp_df.get("yerr")
                     err = None if yerr is None else yerr.to_numpy(dtype=float)
@@ -535,8 +602,6 @@ class PlotPanel(ttk.Frame):
                     error_entries.append({"x": xs, "mean": means, "yerr": err, "label": legend})
 
         self.plot_controller.clear_fit()
-        self.plot_controller.clear_literature()
-        self.plot_controller.clear_crosses()
 
         self.plot_controller.draw_scatter(
             series_entries,
@@ -568,7 +633,7 @@ class PlotPanel(ttk.Frame):
 
         if self._fit is not None and self._fit_fn is not None and not work.empty:
             try:
-                xs = work["x"].to_numpy(dtype=float)
+                xs = pd.to_numeric(work["x"], errors="coerce").to_numpy(dtype=float)
                 xs = xs[np.isfinite(xs)]
                 if xs.size == 0:
                     raise ValueError("No finite X values for fit")
@@ -577,30 +642,6 @@ class PlotPanel(ttk.Frame):
                 current_xlim = self.axes.get_xlim()
             except Exception:
                 pass
-
-        for entry in self._literature:
-            fn = entry.get("fn")
-            label = entry.get("label") or f"Lit: {entry.get('model', '')}"
-            if fn is None:
-                continue
-            try:
-                xmin, xmax = current_xlim
-                if not (np.isfinite(xmin) and np.isfinite(xmax)) or xmin == xmax:
-                    continue
-                x_grid = np.linspace(xmin, xmax, 256)
-                with np.errstate(all="ignore"):
-                    y_grid = fn(x_grid)
-                mask = np.isfinite(x_grid) & np.isfinite(y_grid)
-                if not np.any(mask):
-                    continue
-                self.plot_controller.draw_literature(
-                    x_grid[mask],
-                    y_grid[mask],
-                    label=label,
-                    fn=fn,
-                )
-            except Exception:
-                continue
 
         handles, labels = self.axes.get_legend_handles_labels()
         if labels:
@@ -623,11 +664,21 @@ class PlotPanel(ttk.Frame):
         if "__group__" not in df.columns:
             df["__group__"] = "All"
 
+        numeric_map: pd.DataFrame | None = None
+        if "__x_numeric__" in df.columns:
+            numeric_map = (
+                df[["x", "__x_numeric__"]]
+                .dropna()
+                .drop_duplicates()
+            )
+
         grouped = (
             df.groupby(["__group__", "x"])["y"]
             .agg(["count", "mean", "std"])
             .reset_index()
         )
+        if numeric_map is not None and not numeric_map.empty:
+            grouped = grouped.merge(numeric_map, on="x", how="left")
         if grouped.empty:
             self._last_group_stats = pd.DataFrame()
             return grouped
@@ -641,6 +692,8 @@ class PlotPanel(ttk.Frame):
         ci95 = 1.96 * sem
 
         result = grouped.copy()
+        if "__x_numeric__" in result.columns:
+            result["__x_numeric__"] = pd.to_numeric(result["__x_numeric__"], errors="coerce")
         result["std"] = std
         result["sem"] = sem
         result["ci95"] = ci95
@@ -662,19 +715,26 @@ class PlotPanel(ttk.Frame):
         if "__group__" not in df.columns:
             df["__group__"] = "All"
 
-        df["x"] = pd.to_numeric(df["x"], errors="coerce")
+        if "__x_numeric__" in df.columns:
+            df["__x_numeric__"] = pd.to_numeric(df["__x_numeric__"], errors="coerce")
+            df = df.dropna(subset=["__x_numeric__"])
+            x_numeric_col = "__x_numeric__"
+        else:
+            df["x"] = pd.to_numeric(df["x"], errors="coerce")
+            x_numeric_col = "x"
         df["y"] = pd.to_numeric(df["y"], errors="coerce")
         df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["x", "y"])
         if df.empty:
             raise ValueError("No finite values for distribution plot.")
 
-        stats = df[["__group__", "x", "y"]].copy()
+        stats = df[["__group__", x_numeric_col, "y"]].copy()
+        stats = stats.rename(columns={x_numeric_col: "x"})
         stats["mode"] = mode
         self._last_group_stats = stats
 
         ax = self.axes
         groups = sorted(df["__group__"].astype(str).unique())
-        x_values = df["x"].dropna().unique()
+        x_values = df[x_numeric_col].dropna().unique()
         if x_values.size == 0:
             raise ValueError("No finite X values for distribution plot.")
         xs_sorted = sorted(float(v) for v in x_values)
@@ -692,7 +752,7 @@ class PlotPanel(ttk.Frame):
             data_per_x = []
             positions = []
             for x_val in xs_sorted:
-                ys = subset.loc[np.isclose(subset["x"], x_val), "y"]
+                ys = subset.loc[np.isclose(subset[x_numeric_col], x_val), "y"]
                 ys = ys[np.isfinite(ys)]
                 if ys.empty:
                     continue
@@ -721,9 +781,12 @@ class PlotPanel(ttk.Frame):
     def _collect_ordering_ticks(self, work: pd.DataFrame) -> list[tuple[float, str]]:
         ticks: list[tuple[float, str]] = []
         seen: set[tuple[float, str]] = set()
+        numeric_col = "__x_numeric__" if "__x_numeric__" in work.columns else None
+        label_col = "x" if numeric_col else "tag"
         for _, row in work.iterrows():
-            x_val = _safe_float(row.get("x"))
-            tag = str(row.get("tag", ""))
+            source_value = row.get(numeric_col) if numeric_col else row.get("x")
+            x_val = _safe_float(source_value)
+            tag = str(row.get(label_col, ""))
             if not tag:
                 continue
             if not isfinite(x_val):
@@ -784,14 +847,7 @@ class PlotPanel(ttk.Frame):
         export_df.to_csv(path, index=False)
 
     def _export_intersections(self) -> None:
-        if self.intersections_box.size() == 0:
-            messagebox.showinfo("Export Intersections", "Nothing to export.")
-            return
-        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
-        if not path:
-            return
-        rows = [self.intersections_box.get(idx) for idx in range(self.intersections_box.size())]
-        pd.DataFrame({"point": rows}).to_csv(path, index=False)
+        raise RuntimeError("Intersections feature has been removed.")
 
     def _export_residuals(self) -> None:
         if self._fit is None or self._current_xy is None or self._current_xy.empty:
@@ -801,7 +857,16 @@ class PlotPanel(ttk.Frame):
             messagebox.showinfo("Residuals", "Fit function is not available.")
             return
         try:
-            x_vals = self._current_xy["x"].to_numpy(dtype=float)
+            # Residuals must be computed on the same X used for fitting.
+            x_raw = self._current_xy["x"]
+            x_series = pd.to_numeric(x_raw, errors="coerce")
+            if x_series.isna().any():
+                messagebox.showerror(
+                    "Residuals",
+                    "Selected X axis contains non-numeric values; residuals cannot be exported.",
+                )
+                return
+            x_vals = x_series.to_numpy(dtype=float)
             predicted = np.asarray(self._fit_fn(x_vals), dtype=float)
         except Exception:
             messagebox.showinfo("Residuals", "Unable to evaluate fitted model.")
@@ -826,7 +891,6 @@ class PlotPanel(ttk.Frame):
         self.fit_summary.configure(state="normal")
         self.fit_summary.delete("1.0", "end")
         self.fit_summary.configure(state="disabled")
-        self.intersections_box.delete(0, tk.END)
         self.canvas.draw_idle()
 
     def _on_fit(self) -> None:
@@ -834,8 +898,31 @@ class PlotPanel(ttk.Frame):
             messagebox.showinfo("Fit", "Plot some data first.")
             return
 
-        x = self._current_xy["x"].to_numpy(dtype=float)
-        y = self._current_xy["y"].to_numpy(dtype=float)
+        # Fit on exactly the X axis that is currently selected for plotting.
+        # If the X axis is non-numeric (e.g., tag text), fail with a clear message.
+        x_raw = self._current_xy["x"]
+        x_series = pd.to_numeric(x_raw, errors="coerce")
+        y_series = pd.to_numeric(self._current_xy["y"], errors="coerce")
+
+        if x_series.isna().any():
+            try:
+                bad_examples = (
+                    x_raw[x_series.isna()]
+                    .dropna()
+                    .astype(str)
+                    .unique()
+                    .tolist()
+                )[:5]
+            except Exception:
+                bad_examples = []
+            msg = "Selected X axis contains non-numeric values. Fitting requires numeric X."
+            if bad_examples:
+                msg += f"\nExamples: {', '.join(bad_examples)}"
+            messagebox.showerror("Fit", msg)
+            return
+
+        x = x_series.to_numpy(dtype=float)
+        y = y_series.to_numpy(dtype=float)
 
         try:
             if self.fit_model.get() == "Linear":
@@ -881,386 +968,16 @@ class PlotPanel(ttk.Frame):
         self._on_plot()
 
     def _refresh_literature_params(self) -> None:
-        previous = {name: var.get() for name, var in self.lit_param_vars.items()}
-        for widget in self.lit_params_frame.winfo_children():
-            widget.destroy()
-        self.lit_param_vars.clear()
-
-        model = self.lit_model.get()
-        defaults: dict[str, dict[str, str]] = {
-            "Linear": {"m": previous.get("m", "1.0"), "b": previous.get("b", "0.0")},
-            "Quadratic": {
-                "a": previous.get("a", "1.0"),
-                "b": previous.get("b", "0.0"),
-                "c": previous.get("c", "0.0"),
-            },
-            "Power": {"a": previous.get("a", "1.0"), "b": previous.get("b", "1.0")},
-        }
-        examples = {
-            "Linear": "y = m·x + b",
-            "Quadratic": "y = a·x² + b·x + c",
-            "Power": "y = a·xᵇ (a>0)",
-        }
-        self.lit_example.configure(text=examples.get(model, ""))
-
-        params = defaults.get(model, {})
-        for row_index, (name, default_value) in enumerate(params.items()):
-            ttk.Label(self.lit_params_frame, text=name).grid(row=row_index, column=0, sticky="w")
-            var = tk.StringVar(value=default_value)
-            entry = ttk.Entry(self.lit_params_frame, textvariable=var, width=12)
-            entry.grid(row=row_index, column=1, sticky="w", padx=(6, 12), pady=2)
-            self.lit_param_vars[name] = var
-
-        for column in range(2):
-            self.lit_params_frame.columnconfigure(column, weight=0)
+        raise RuntimeError("Literature Overlay has been removed.")
 
     def _on_intersections(self) -> None:
-        self.intersections_box.delete(0, tk.END)
-        if self._fit_fn is None:
-            messagebox.showinfo(
-                "Intersections",
-                "No trendline has been fitted yet.\n\nFit a trendline to the current data before finding intersections.",
-            )
-            self.intersections_box.insert(tk.END, "Fit required first.")
-            return
-        if not self._literature:
-            self.intersections_box.insert(tk.END, "No literature overlays.")
-            self.plot_controller.clear_crosses()
-            return
-
-        xmin, xmax = self.axes.get_xlim()
-        if not (np.isfinite(xmin) and np.isfinite(xmax)) or xmin == xmax:
-            if self._current_xy is not None and not self._current_xy.empty:
-                xs = self._current_xy["x"].to_numpy(dtype=float)
-                xs = xs[np.isfinite(xs)]
-                if xs.size:
-                    xmin = float(np.nanmin(xs))
-                    xmax = float(np.nanmax(xs))
-        if not (np.isfinite(xmin) and np.isfinite(xmax)) or xmin == xmax:
-            self.intersections_box.insert(tk.END, "Invalid plot range.")
-            self.plot_controller.clear_crosses()
-            return
-
-        sample_x = np.linspace(xmin, xmax, 512)
-        with np.errstate(all="ignore"):
-            fit_y = np.asarray(self._fit_fn(sample_x), dtype=float)
-        mask_fit = np.isfinite(fit_y)
-        if not np.any(mask_fit):
-            self.intersections_box.insert(tk.END, "Fit is undefined in range.")
-            self.plot_controller.clear_crosses()
-            return
-
-        sample_x = sample_x[mask_fit]
-        fit_y = fit_y[mask_fit]
-
-        seen: set[tuple[int, int]] = set()
-        hits_x: list[float] = []
-        hits_y: list[float] = []
-        found = False
-
-        # Gather analytic sources from both the stored metadata and rendered lines.
-        source_functions: list[tuple[str, Callable[[np.ndarray], np.ndarray]]] = []
-        fn_ids: set[int] = set()
-
-        for line in getattr(self.plot_controller, "_literature_lines", []):
-            fn_line = getattr(line, "_literature_fn", None)
-            if callable(fn_line):
-                label_line = getattr(line, "_literature_label", None) or "Literature"
-                fn_ids.add(id(fn_line))
-                source_functions.append((label_line, fn_line))
-
-        for entry in self._literature:
-            fn = entry.get("fn")
-            if not callable(fn) or id(fn) in fn_ids:
-                continue
-            label = entry.get("label", "Literature")
-            fn_ids.add(id(fn))
-            source_functions.append((label, fn))
-
-        for curve_label, fn in source_functions:
-            with np.errstate(all="ignore"):
-                lit_y = np.asarray(fn(sample_x), dtype=float)
-            if lit_y.shape != sample_x.shape:
-                continue
-            mask = np.isfinite(lit_y)
-            if not np.any(mask):
-                continue
-            xs = sample_x[mask]
-            fit_vals = fit_y[mask]
-            lit_vals = lit_y[mask]
-            if xs.size < 2:
-                continue
-            diff = fit_vals - lit_vals
-
-            zero_indices = np.where(np.isclose(diff, 0.0, atol=1e-9))[0]
-            for idx in zero_indices:
-                xi = float(xs[idx])
-                yi_arr = self._fit_fn(np.asarray([xi]))
-                yi = float(yi_arr[0] if np.ndim(yi_arr) else yi_arr)
-                key = (round(xi, 9), round(yi, 9))
-                if key in seen:
-                    continue
-                seen.add(key)
-                hits_x.append(xi)
-                hits_y.append(yi)
-                self.intersections_box.insert(
-                    tk.END, f"{curve_label}: x={xi:.6g}, y={yi:.6g}"
-                )
-                found = True
-
-            signs = np.sign(diff)
-            sign_changes = np.where(np.diff(signs) != 0)[0]
-            for idx in sign_changes:
-                x0, x1 = xs[idx], xs[idx + 1]
-                y0, y1 = diff[idx], diff[idx + 1]
-                if y1 == y0:
-                    continue
-                xi = float(x0 - y0 * (x1 - x0) / (y1 - y0))
-                yi_arr = self._fit_fn(np.asarray([xi]))
-                yi = float(yi_arr[0] if np.ndim(yi_arr) else yi_arr)
-                key = (round(xi, 9), round(yi, 9))
-                if key in seen:
-                    continue
-                seen.add(key)
-                hits_x.append(xi)
-                hits_y.append(yi)
-                self.intersections_box.insert(
-                    tk.END, f"{curve_label}: x={xi:.6g}, y={yi:.6g}"
-                )
-                found = True
-
-        self.plot_controller.clear_crosses()
-        if hits_x:
-            self.plot_controller.draw_points(hits_x, hits_y, label="Intersections", style_kwargs={"color": "#1E88E5"})
-        if not found:
-            self.intersections_box.insert(tk.END, "No intersections in range.")
+        raise RuntimeError("Intersections feature has been removed.")
 
     def _overlay_literature(self) -> None:
-        params: dict[str, float] = {}
-        for name, var in self.lit_param_vars.items():
-            text = var.get().strip()
-            if not text:
-                messagebox.showwarning("Literature", "Please provide parameter values.")
-                return
-            try:
-                params[name] = float(text)
-            except ValueError:
-                messagebox.showwarning("Literature", f"Parameter '{name}' must be numeric.")
-                return
-
-        model = self.lit_model.get()
-        if model == "Power" and params.get("a", 0.0) <= 0:
-            messagebox.showwarning("Literature", "Parameter 'a' must be positive for the power model.")
-            return
-
-        fn, label = self._make_literature_function(model, params)
-
-        xmin, xmax = self.axes.get_xlim()
-        if not (np.isfinite(xmin) and np.isfinite(xmax)) or xmin == xmax:
-            if self._current_xy is not None and not self._current_xy.empty:
-                xs = self._current_xy["x"].to_numpy(dtype=float)
-                xs = xs[np.isfinite(xs)]
-                if xs.size:
-                    xmin = float(np.nanmin(xs))
-                    xmax = float(np.nanmax(xs))
-        if not (np.isfinite(xmin) and np.isfinite(xmax)) or xmin == xmax:
-            messagebox.showwarning("Literature", "Plot data first to determine an X range.")
-            return
-
-        sample_x = np.linspace(xmin, xmax, 256)
-        with np.errstate(all="ignore"):
-            sample_y = np.asarray(fn(sample_x), dtype=float)
-        mask = np.isfinite(sample_y)
-        if not np.any(mask):
-            messagebox.showwarning("Literature", "Curve is undefined for the current range.")
-            return
-
-        self._literature.append({"model": model, "params": params, "fn": fn, "label": label})
-        self.plot_controller.draw_literature(
-            sample_x[mask], sample_y[mask], label=label, fn=fn
-        )
-        self.plot_controller.clear_crosses()
-        self.intersections_box.delete(0, tk.END)
+        raise RuntimeError("Literature Overlay has been removed.")
 
     def _clear_literature(self) -> None:
-        if self._literature:
-            self._literature.clear()
-        self.plot_controller.clear_literature()
-        self.plot_controller.clear_crosses()
-        self.intersections_box.delete(0, tk.END)
-
-    def _refresh_inverse_params(self) -> None:
-        previous = {name: var.get() for name, var in self.inv_param_vars.items()}
-        for child in self.inv_params_frame.winfo_children():
-            child.destroy()
-        self.inv_param_vars.clear()
-
-        model = self.inv_model.get()
-        defaults = {
-            "Linear": {"m": previous.get("m", "1.0"), "b": previous.get("b", "0.0")},
-            "Quadratic": {
-                "a": previous.get("a", "1.0"),
-                "b": previous.get("b", "0.0"),
-                "c": previous.get("c", "0.0"),
-            },
-            "Power": {"a": previous.get("a", "1.0"), "b": previous.get("b", "1.0")},
-        }
-        examples = {
-            "Linear": "y = m·x + b",
-            "Quadratic": "y = a·x² + b·x + c",
-            "Power": "y = a·xᵇ (a>0)",
-        }
-        self.inv_example.configure(text=examples.get(model, ""))
-        params = defaults.get(model, {})
-        for row, (name, value) in enumerate(params.items()):
-            ttk.Label(self.inv_params_frame, text=name).grid(row=row, column=0, sticky="w")
-            var = tk.StringVar(value=value)
-            ttk.Entry(self.inv_params_frame, textvariable=var, width=12).grid(
-                row=row, column=1, sticky="w", padx=(6, 12), pady=2
-            )
-            self.inv_param_vars[name] = var
-
-    def _on_inverse_solve(self) -> None:
-        for item_id in self.inverse_table.get_children():
-            self.inverse_table.delete(item_id)
-
-        try:
-            params = {name: float(var.get()) for name, var in self.inv_param_vars.items()}
-        except (TypeError, ValueError):
-            messagebox.showwarning("Inverse", "All parameters must be numeric.")
-            return
-
-        inverse_fn = self._inverse_for(self.inv_model.get(), params)
-        if inverse_fn is None:
-            messagebox.showwarning("Inverse", "Unsupported model or invalid parameters.")
-            return
-
-        df = getattr(self.session, "results_df", None)
-        if df is None or df.empty:
-            messagebox.showinfo("Inverse", "No results available. Compute selections first.")
-            return
-
-        y_metric = (self.inv_y_metric.get() or "").strip()
-        if not y_metric:
-            messagebox.showwarning("Inverse", "Choose a Y metric.")
-            return
-
-        work = df.copy()
-        work["y"] = self._resolve_axis(y_metric, work)
-        work = work[[col for col in ("file", "tag", "y") if col in work.columns]]
-        work = work.replace([np.inf, -np.inf], np.nan).dropna(subset=["y"])
-        if work.empty:
-            messagebox.showinfo("Inverse", f"No finite values for {y_metric}.")
-            return
-
-        results: list[tuple[str, float, float, float]] = []
-        if self.inv_y_source.get() == "Group mean":
-            tmp = work.copy()
-            if "tag" in tmp.columns:
-                tmp["__group__"] = tmp["tag"].astype(str)
-            else:
-                tmp["__group__"] = "All"
-            means = tmp.groupby("__group__")["y"].mean().reset_index()
-            for _, row in means.iterrows():
-                y_val = float(row["y"])
-                label = str(row["__group__"]) or "All"
-                sols = [float(val) for val in inverse_fn(y_val) if isfinite(val)]
-                x1 = sols[0] if len(sols) >= 1 else float("nan")
-                x2 = sols[1] if len(sols) >= 2 else float("nan")
-                results.append((label, y_val, x1, x2))
-        else:
-            for _, row in work.iterrows():
-                y_val = float(row["y"])
-                label = str(row.get("tag") or row.get("file") or "") or "(unnamed)"
-                sols = [float(val) for val in inverse_fn(y_val) if isfinite(val)]
-                x1 = sols[0] if len(sols) >= 1 else float("nan")
-                x2 = sols[1] if len(sols) >= 2 else float("nan")
-                results.append((label, y_val, x1, x2))
-
-        if not results:
-            self.inverse_table.insert("", "end", values=("—", "—", "—", "—"))
-            return
-
-        xs_to_plot: list[float] = []
-        ys_to_plot: list[float] = []
-        for label, y_val, x1, x2 in results:
-            display = (
-                label,
-                f"{y_val:.6g}",
-                "" if not isfinite(x1) else f"{x1:.6g}",
-                "" if not isfinite(x2) else f"{x2:.6g}",
-            )
-            self.inverse_table.insert("", "end", values=display)
-            for candidate in (x1, x2):
-                if isfinite(candidate):
-                    xs_to_plot.append(candidate)
-                    ys_to_plot.append(y_val)
-
-        if self.inv_plot_on_chart.get() and xs_to_plot:
-            self.add_annotation_points(np.asarray(xs_to_plot, dtype=float), np.asarray(ys_to_plot, dtype=float), label="Inverse solutions")
-
-    def _export_inverse(self) -> None:
-        rows = [self.inverse_table.item(iid)["values"] for iid in self.inverse_table.get_children()]
-        if not rows:
-            messagebox.showinfo("Export Solutions", "Nothing to export.")
-            return
-        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
-        if not path:
-            return
-        pd.DataFrame(rows, columns=["label", "y", "x1", "x2"]).to_csv(path, index=False)
-
-    def _copy_inverse(self) -> None:
-        rows = [self.inverse_table.item(iid)["values"] for iid in self.inverse_table.get_children()]
-        if not rows:
-            messagebox.showinfo("Copy", "Nothing to copy.")
-            return
-        df = pd.DataFrame(rows, columns=["label", "y", "x1", "x2"])
-        self._copy_text(df.to_csv(index=False))
-
-    @staticmethod
-    def _format_number(value: float) -> str:
-        return f"{value:.6g}"
-
-    @staticmethod
-    def _format_signed(value: float) -> str:
-        sign = "+" if value >= 0 else "-"
-        return f"{sign}{abs(value):.6g}"
-
-    def _make_literature_function(
-        self, model: str, params: dict[str, float]
-    ) -> tuple[Callable[[np.ndarray], np.ndarray], str]:
-        if model == "Quadratic":
-            a = float(params.get("a", 0.0))
-            b = float(params.get("b", 0.0))
-            c = float(params.get("c", 0.0))
-
-            def fn(x: np.ndarray, A=a, B=b, C=c) -> np.ndarray:
-                return A * x * x + B * x + C
-
-            label = (
-                f"Lit: y={self._format_number(a)}x^2 "
-                f"{self._format_signed(b)}x {self._format_signed(c)}"
-            )
-            return fn, label
-
-        if model == "Power":
-            a = float(params.get("a", 0.0))
-            b = float(params.get("b", 1.0))
-
-            def fn(x: np.ndarray, A=a, B=b) -> np.ndarray:
-                return A * np.power(x, B)
-
-            label = f"Lit: y={self._format_number(a)}x^{self._format_number(b)}"
-            return fn, label
-
-        m = float(params.get("m", 1.0))
-        b = float(params.get("b", 0.0))
-
-        def fn(x: np.ndarray, M=m, B=b) -> np.ndarray:
-            return M * x + B
-
-        label = f"Lit: y={self._format_number(m)}x{self._format_signed(b)}"
-        return fn, label
+        raise RuntimeError("Literature Overlay has been removed.")
 
     def _inverse_for(self, model: str, params: dict[str, float]):
         if model == "Linear":
@@ -1381,17 +1098,21 @@ class PlotPanel(ttk.Frame):
         self._copy_text(self._last_group_stats.to_csv(index=False))
 
     def _copy_intersections(self) -> None:
-        if self.intersections_box.size() == 0:
-            messagebox.showinfo("Copy", "Nothing to copy.")
-            return
-        rows = [self.intersections_box.get(idx) for idx in range(self.intersections_box.size())]
-        self._copy_text("\n".join(rows))
+        raise RuntimeError("Intersections feature has been removed.")
 
     def _copy_residuals(self) -> None:
         if self._fit_fn is None or self._current_xy is None or self._current_xy.empty:
             messagebox.showinfo("Copy", "Residuals are not available.")
             return
-        x_vals = self._current_xy["x"].to_numpy(dtype=float)
+        # Residuals must reflect the chosen X axis; fail if non-numeric.
+        x_raw = self._current_xy["x"]
+        x_series = pd.to_numeric(x_raw, errors="coerce")
+        if x_series.isna().any():
+            messagebox.showinfo(
+                "Copy", "Selected X axis contains non-numeric values; residuals unavailable."
+            )
+            return
+        x_vals = x_series.to_numpy(dtype=float)
         try:
             predicted = np.asarray(self._fit_fn(x_vals), dtype=float)
         except Exception:
@@ -1400,6 +1121,12 @@ class PlotPanel(ttk.Frame):
         export = self._current_xy.copy()
         export = export.assign(y_fit=predicted, residual=export["y"].to_numpy(dtype=float) - predicted)
         self._copy_text(export.to_csv(index=False))
+
+
+    def _make_literature_function(
+        self, model: str, params: dict[str, float]
+    ) -> tuple[Callable[[np.ndarray], np.ndarray], str]:
+        raise RuntimeError("Literature Overlay has been removed.")
 
 
 __all__ = ["PlotPanel"]

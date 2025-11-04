@@ -8,6 +8,9 @@ from typing import Dict, Iterable, List, Optional
 import pandas as pd
 
 
+APPEND_ONLY = True
+
+
 @dataclass
 class AnalysisSession:
     """In-memory representation of an analysis session.
@@ -43,6 +46,45 @@ class AnalysisSession:
     # Persisted Selection Panel state (mode, aggregator, picks)
     selection_state: Optional[dict] = None
 
+    def has_files(self) -> bool:
+        """Return ``True`` if any raw tables are loaded."""
+
+        return bool(self.raw_tables)
+
+    def list_files(self) -> List[str]:
+        """Return known file identifiers in load order."""
+
+        if not self.results_df.empty and "file" in self.results_df.columns:
+            files = self.results_df["file"].astype(str).tolist()
+            seen: set[str] = set()
+            ordered: List[str] = []
+            for file_id in files:
+                if not file_id or file_id in seen:
+                    continue
+                seen.add(file_id)
+                ordered.append(file_id)
+            return ordered
+        if self.raw_tables:
+            ordered: List[str] = []
+            seen_tables: set[str] = set()
+            for key in self.raw_tables.keys():
+                if not key or key in seen_tables:
+                    continue
+                seen_tables.add(key)
+                ordered.append(key)
+            return ordered
+        if not self.raw_df.empty and "file" in self.raw_df.columns:
+            files = self.raw_df["file"].astype(str).dropna().tolist()
+            seen_raw: set[str] = set()
+            ordered_raw: List[str] = []
+            for file_id in files:
+                if not file_id or file_id in seen_raw:
+                    continue
+                seen_raw.add(file_id)
+                ordered_raw.append(file_id)
+            return ordered_raw
+        return []
+
     def ensure_files(self, files: Iterable[str]) -> None:
         """Ensure that all files exist in :attr:`results_df`.
 
@@ -68,11 +110,35 @@ class AnalysisSession:
         )
 
     def set_raw_data(self, df: pd.DataFrame) -> None:
-        """Assign raw data and refresh dependent state."""
+        """Add raw data without discarding previously loaded files."""
 
-        self.raw_df = df.copy()
-        files = self.raw_df["file"].unique().tolist() if not df.empty else []
-        self.ensure_files(files)
+        if df is None or df.empty:
+            return
+
+        incoming = df.copy()
+        if "file" not in incoming.columns:
+            raise ValueError("Raw data must include a 'file' column for additive imports.")
+
+        incoming["file"] = incoming["file"].astype(str)
+        existing_files: set[str] = set()
+        if not self.raw_df.empty and "file" in self.raw_df.columns:
+            existing_files = set(self.raw_df["file"].astype(str).tolist())
+
+        # Skip any rows whose file id already exists; additive only.
+        append_mask = ~incoming["file"].isin(existing_files)
+        append_df = incoming.loc[append_mask].copy()
+        if append_df.empty:
+            return
+
+        if self.raw_df is None or self.raw_df.empty:
+            self.raw_df = append_df
+        else:
+            self.raw_df = pd.concat([self.raw_df, append_df], ignore_index=True, sort=False)
+
+        new_files = append_df["file"].dropna().unique().tolist()
+        if new_files:
+            self.ensure_files(new_files)
+
         self.data_fit = None
         self.literature_fit = None
         self.intersections.clear()
@@ -94,7 +160,14 @@ class AnalysisSession:
     def set_raw_tables(self, tables: Dict[str, pd.DataFrame]) -> None:
         """Store non-normalized CSV tables keyed by file identifier."""
 
-        self.raw_tables = dict(tables or {})
+        if not tables:
+            return
+
+        for file_id, table in tables.items():
+            key = str(file_id)
+            if not key or key in self.raw_tables:
+                continue
+            self.raw_tables[key] = table
 
     def get_raw_table(self, file_id: str) -> Optional[pd.DataFrame]:
         """Retrieve a raw table matching ``file_id`` if available."""
