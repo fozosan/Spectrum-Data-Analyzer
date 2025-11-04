@@ -45,6 +45,43 @@ class AnalysisSession:
     raw_tables: Dict[str, pd.DataFrame] = field(default_factory=dict)
     # Persisted Selection Panel state (mode, aggregator, picks)
     selection_state: Optional[dict] = None
+    # ---- Inverse-solve memory (flat; no nested configs passed to runner)
+    inv_params_linear: Dict[str, float] = field(default_factory=dict)
+    inv_params_quadratic: Dict[str, float] = field(default_factory=dict)
+    inv_params_power: Dict[str, float] = field(default_factory=dict)
+    inv_model_last: Optional[str] = None
+    inv_y_metric_last: Optional[str] = None
+    inv_y_source_last: Optional[str] = None
+    inv_plot_on_chart_last: Optional[bool] = None
+
+    # ---- Helpers (remain purely UI/session-scoped)
+    def get_inv_params(self, model: str) -> Dict[str, float]:
+        m = (model or "").strip().lower()
+        if m == "linear":
+            return dict(self.inv_params_linear)
+        if m == "quadratic":
+            return dict(self.inv_params_quadratic)
+        if m == "power":
+            return dict(self.inv_params_power)
+        return {}
+
+    def set_inv_params(self, model: str, params: Dict[str, float]) -> None:
+        if not model:
+            return
+        # sanitize to floats
+        clean: Dict[str, float] = {}
+        for k, v in (params or {}).items():
+            try:
+                clean[str(k)] = float(v)
+            except Exception:
+                continue
+        m = model.strip().lower()
+        if m == "linear":
+            self.inv_params_linear = clean
+        elif m == "quadratic":
+            self.inv_params_quadratic = clean
+        elif m == "power":
+            self.inv_params_power = clean
 
     def has_files(self) -> bool:
         """Return ``True`` if any raw tables are loaded."""
