@@ -275,6 +275,48 @@ class PlotPanel(ttk.Frame):
         self._fit_fn = None
         self._fit_label: str | None = None
 
+    def _refresh_inverse_params(self) -> None:
+        # Rebuild the inverse-parameter inputs based on the current model.
+        # Minimal restoration to satisfy existing __init__ call sites.
+        previous = {name: var.get() for name, var in getattr(self, "inv_param_vars", {}).items()}
+        # Clear the frame
+        for child in self.inv_params_frame.winfo_children():
+            child.destroy()
+        # Reset storage
+        self.inv_param_vars = {}
+
+        model = self.inv_model.get()
+        defaults = {
+            "Linear": {"m": previous.get("m", "1.0"), "b": previous.get("b", "0.0")},
+            "Quadratic": {
+                "a": previous.get("a", "1.0"),
+                "b": previous.get("b", "0.0"),
+                "c": previous.get("c", "0.0"),
+            },
+            "Power": {"a": previous.get("a", "1.0"), "b": previous.get("b", "1.0")},
+        }
+        examples = {
+            "Linear": "y = m·x + b",
+            "Quadratic": "y = a·x² + b·x + c",
+            "Power": "y = a·xᵇ (a>0)",
+        }
+        # Update example text if present
+        if hasattr(self, "inv_example"):
+            self.inv_example.configure(text=examples.get(model, ""))
+
+        params = defaults.get(model, {})
+        row = 0
+        for name, default_value in params.items():
+            ttk.Label(self.inv_params_frame, text=name).grid(row=row, column=0, sticky="w")
+            var = tk.StringVar(value=default_value)
+            entry = ttk.Entry(self.inv_params_frame, textvariable=var, width=12)
+            entry.grid(row=row, column=1, sticky="w", padx=(6, 12), pady=2)
+            self.inv_param_vars[name] = var
+            row += 1
+
+        for col in range(2):
+            self.inv_params_frame.columnconfigure(col, weight=0)
+
     # ------------------------------------------------------------------ public API
     def set_tag_lookup(self, fn: Callable[[list[str]], list[str]]) -> None:
         self._tag_lookup = fn
