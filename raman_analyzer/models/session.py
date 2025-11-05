@@ -278,10 +278,19 @@ class AnalysisSession:
         values_df = values_df.rename(columns={"value": metric_name})
         self.results_df = self.results_df.merge(values_df, on="file", how="left")
 
-    def update_ordering(self, mapping: dict[str, float]) -> None:
-        """Replace the entire Ordering map."""
+    def update_ordering(self, mapping: Dict[str, float]) -> None:
+        """Merge ordering values without dropping any existing entries."""
 
-        self.ordering = dict(mapping or {})
+        if not mapping:
+            return
+        if self.ordering is None:
+            self.ordering = {}
+        for k, v in mapping.items():
+            try:
+                self.ordering[str(k)] = float(v)
+            except Exception:
+                # Ignore non-numeric inputs strictly; no fallbacks.
+                continue
 
     def update_x_mapping(self, *_args, **_kwargs):
         raise NotImplementedError(
