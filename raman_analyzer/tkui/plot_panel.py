@@ -473,6 +473,79 @@ class PlotPanel(ttk.Frame):
                 label="Inverse solutions",
             )
 
+        # --- Persist inverse solutions into results_df as a plottable metric ---
+        try:
+            df_res = getattr(self.session, "results_df", None)
+            if df_res is None or df_res.empty or "file" not in df_res.columns:
+                # Nothing to persist against
+                pass
+            else:
+                # Helper: choose the first finite candidate among [x1, x2]
+                def _choose_x(x1: float, x2: float) -> float:
+                    if isfinite(x1):
+                        return float(x1)
+                    if isfinite(x2):
+                        return float(x2)
+                    return float("nan")
+
+                y_metric = (self.inv_y_metric.get() or "").strip()
+                if not y_metric:
+                    # Already validated above; guard anyway
+                    return
+
+                # Rebuild the same work frame used for solving so we can map per-file.
+                work = df_res.copy()
+                work["y"] = self._resolve_axis(y_metric, work)
+                cols = [c for c in ("file", "tag", "y") if c in work.columns]
+                work = work.loc[:, cols].replace([np.inf, -np.inf], np.nan).dropna(subset=["y"])
+
+                source = (self.inv_y_source.get() or "Points").strip()
+                file_to_values: dict[str, list[float]] = {}
+
+                if source == "Group mean":
+                    # Map each group label to its solved X, then replicate to all files with that tag.
+                    tag_map: dict[str, float] = {}
+                    for label, y_val, x1, x2 in results:
+                        label_str = str(label)
+                        x_val = _choose_x(x1, x2)
+                        if isfinite(x_val) and label_str:
+                            tag_map[label_str] = x_val
+
+                    if "tag" in df_res.columns:
+                        for _, row in df_res[["file", "tag"]].iterrows():
+                            f = str(row["file"])
+                            t = "" if pd.isna(row["tag"]) else str(row["tag"])
+                            x_val = tag_map.get(t, float("nan"))
+                            if isfinite(x_val):
+                                file_to_values.setdefault(f, []).append(x_val)
+                else:
+                    # Points: compute per-row solutions and aggregate per file (mean of finite values).
+                    for _, row in work.iterrows():
+                        f = str(row.get("file", ""))
+                        yv = float(row["y"])
+                        sols = [float(val) for val in inverse_fn(yv) if isfinite(val)]
+                        x1 = sols[0] if len(sols) >= 1 else float("nan")
+                        x2 = sols[1] if len(sols) >= 2 else float("nan")
+                        xv = _choose_x(x1, x2)
+                        if f and isfinite(xv):
+                            file_to_values.setdefault(f, []).append(xv)
+
+                if file_to_values:
+                    files, values = [], []
+                    for f, arr in file_to_values.items():
+                        if arr:
+                            files.append(f)
+                            values.append(float(np.nanmean(np.asarray(arr, dtype=float))))
+                    if files:
+                        persist_df = pd.DataFrame({"file": files, "value": values})
+                        self.session.update_metric(INVERSE_X_LABEL, persist_df)
+                        # refresh X/Y menus to include the new metric
+                        latest = [c for c in self.session.results_df.columns if c not in {"file", "tag"}]
+                        self.set_metrics_for_xy(latest)
+        except Exception:
+            # Do not interrupt UI flow if persistence fails.
+            pass
+
     # ------------------------------------------------------------------ public API
     def set_tag_lookup(self, fn: Callable[[list[str]], list[str]]) -> None:
         self._tag_lookup = fn
