@@ -1,6 +1,7 @@
 """Tkinter front-end for the Raman Analyzer application."""
 from __future__ import annotations
 
+import re
 import tkinter as tk
 from tkinter import (
     filedialog,
@@ -211,26 +212,32 @@ class TkRamanApp:
             if just_loaded_files:
                 raw_list = simpledialog.askstring(
                     "Ordering (multiple files)",
-                    "Enter comma-separated numeric Ordering values for each imported file, in the same order they were selected.\n"
-                    f"Count must be exactly {len(just_loaded_files)}.\n"
-                    "(Leave blank to skip; no defaults will be applied.)",
+                    "Enter ONE number to apply to ALL imported files\n"
+                    "— OR — enter comma/space separated numbers in the same order as selection.\n"
+                    f"(Expect {len(just_loaded_files)} values if not using a single number.)",
                     parent=self.root,
                 )
                 if raw_list:
-                    parts = [p.strip() for p in raw_list.split(",")]
-                    if len(parts) != len(just_loaded_files):
-                        messagebox.showwarning(
-                            "Ordering",
-                            f"Expected {len(just_loaded_files)} values; got {len(parts)}. Nothing applied.",
-                        )
-                    else:
-                        try:
+                    try:
+                        parts = [p for p in re.split(r"[\,\s]+", raw_list.strip()) if p]
+                        mapping: Dict[str, float] = {}
+                        if len(parts) == 1:
+                            v = float(parts[0])
+                            mapping = {fid: v for fid in just_loaded_files}
+                        elif len(parts) == len(just_loaded_files):
                             values = [float(p) for p in parts]
                             mapping = {fid: val for fid, val in zip(just_loaded_files, values)}
+                        else:
+                            messagebox.showwarning(
+                                "Ordering",
+                                f"Provide either ONE value for all files or exactly {len(just_loaded_files)} values.",
+                            )
+                            mapping = {}
+                        if mapping:
                             self.session.update_ordering(mapping)
                             self.file_list.refresh()
-                        except Exception:
-                            messagebox.showwarning("Ordering", "All Ordering values must be numeric. Nothing applied.")
+                    except Exception:
+                        messagebox.showwarning("Ordering", "Ordering values must be numeric. Nothing applied.")
 
         if just_loaded_files:
             self.file_list.select_file(just_loaded_files[0])
