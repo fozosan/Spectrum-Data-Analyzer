@@ -7,7 +7,7 @@ from typing import Callable, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 from math import isfinite
 
@@ -284,6 +284,11 @@ class PlotPanel(ttk.Frame):
         self.canvas = FigureCanvasTkAgg(self.figure, master=self)
         self.plot_controller = PlotController(self.canvas, self.axes)
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True, padx=6, pady=(0, 6))
+        # Expose full plot controls (pan/zoom/home/save)
+        # NavigationToolbar2Tk auto-packs itself when constructed.
+        self.toolbar = NavigationToolbar2Tk(self.canvas, self)
+        self.toolbar.update()
+        # Keep toolbar alive across clears; never destroy self.axes/self.figure.
 
         # keep an internal buffer for inverse annotations until a plot is drawn
         # (buffer already initialized in __init__ above)
@@ -623,7 +628,18 @@ class PlotPanel(ttk.Frame):
         return
 
     def _on_clear_plot(self) -> None:
-        self.figure.clf()
+        # Do NOT clear the figure; preserve toolbar bindings.
+        try:
+            self.axes.cla()
+        except Exception:
+            # If axes were ever missing, recreate them once (defensive; not expected)
+            self.axes = self.figure.add_subplot(111)
+            self.plot_controller.axes = self.axes
+        # Reset internal buffers but keep fit only if user clears it explicitly.
+        self._current_xy = pd.DataFrame(columns=["file", "tag", "x", "y", "__group__"])
+        self._last_group_stats = None
+        self.axes.set_xlabel(self.x_label_text.get().strip() or "")
+        self.axes.set_ylabel(self.y_label_text.get().strip() or "")
         self.canvas.draw_idle()
 
     def _update_range_state(self) -> None:
