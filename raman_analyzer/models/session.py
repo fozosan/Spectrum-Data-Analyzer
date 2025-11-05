@@ -43,6 +43,8 @@ class AnalysisSession:
     literature_fit: Optional[dict] = None
     intersections: List[tuple[float, float]] = field(default_factory=list)
     raw_tables: Dict[str, pd.DataFrame] = field(default_factory=dict)
+    # Index of per-TXT subsets: key = value from CSV's 'file' column (e.g., "...pos1.txt")
+    raw_tables_by_file: Dict[str, pd.DataFrame] = field(default_factory=dict)
     # Persisted Selection Panel state (mode, aggregator, picks)
     selection_state: Optional[dict] = None
     # ---- Inverse-solve memory (flat; no nested configs passed to runner)
@@ -205,23 +207,55 @@ class AnalysisSession:
             if not key or key in self.raw_tables:
                 continue
             self.raw_tables[key] = table
+            # Build per-file index so Auto-populate can resolve TXT names from CSV content
+            try:
+                if table is not None and not table.empty and "file" in table.columns:
+                    col = table["file"].astype(str)
+                    for fid in col.dropna().unique():
+                        fid_str = str(fid)
+                        if not fid_str or fid_str in self.raw_tables_by_file:
+                            continue
+                        subset = table.loc[col == fid_str].copy()
+                        self.raw_tables_by_file[fid_str] = subset
+            except Exception:
+                # Keep additive behavior; don't raise from UI callback.
+                pass
 
     def get_raw_table(self, file_id: str) -> Optional[pd.DataFrame]:
         """Retrieve a raw table matching ``file_id`` if available."""
 
         if not self.raw_tables:
             return None
+        # 0) Exact hit on per-TXT subsets (preferred)
+        if file_id in self.raw_tables_by_file:
+            return self.raw_tables_by_file[file_id]
+
+        # Helper for case-insensitive basename/root comparison
+        def _base_and_root(s: str) -> tuple[str, str]:
+            s = str(s or "")
+            base = os.path.basename(s)
+            root, _ = os.path.splitext(base)
+            return base.lower(), root.lower()
+
+        tgt_base, tgt_root = _base_and_root(file_id)
+
+        # 1) Fuzzy hit on per-TXT subsets by basename or root (handles path vs bare name)
+        if tgt_base or tgt_root:
+            for k, tbl in self.raw_tables_by_file.items():
+                base_k, root_k = _base_and_root(k)
+                if base_k == tgt_base or (tgt_root and root_k == tgt_root):
+                    return tbl
+
+        # 2) Fallback: exact key to the whole CSV table (rarely used by Auto-populate)
         if file_id in self.raw_tables:
             return self.raw_tables[file_id]
 
-        stem, _ = os.path.splitext(file_id)
-        if stem and stem in self.raw_tables:
-            return self.raw_tables[stem]
-
-        for key, table in self.raw_tables.items():
-            k_stem, _ = os.path.splitext(key)
-            if k_stem == stem and table is not None:
-                return table
+        # 3) Fuzzy: map by basename/root to a whole CSV table if nothing else matched
+        if tgt_base or tgt_root:
+            for key, table in self.raw_tables.items():
+                base_k, root_k = _base_and_root(key)
+                if base_k == tgt_base or (tgt_root and root_k == tgt_root):
+                    return table
         return None
 
     def update_metric(self, metric_name: str, values_df: pd.DataFrame) -> None:
