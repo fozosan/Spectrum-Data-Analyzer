@@ -1,6 +1,7 @@
-"""Tkinter front-end for the Raman Analyzer application."""
+"""Tkinter front-end for the Raman Analyzer UI."""
 from __future__ import annotations
 
+import os
 import re
 import tkinter as tk
 from tkinter import (
@@ -143,7 +144,8 @@ class TkRamanApp:
         combined: List[pd.DataFrame] = []
         tables: Dict[str, pd.DataFrame] = {}
         for path in paths:
-            file_key = str(path)
+            # Use absolute CSV path as the canonical unique file identifier
+            file_key = os.path.abspath(str(path))
             if file_key in existing_tables:
                 continue
             try:
@@ -152,12 +154,20 @@ class TkRamanApp:
                 messagebox.showwarning("Load CSV", f"Failed to read {path}\n{exc}")
                 continue
 
-            if "file" not in df.columns:
-                df = df.copy()
-                df["file"] = file_key
+            # Normalize identifiers:
+            # - Preserve any embedded `file` column as a human label
+            # - Force `file` to be the unique CSV path used everywhere internally
+            tmp = df.copy()
+            if "file" in tmp.columns:
+                if "label" not in tmp.columns:
+                    tmp = tmp.rename(columns={"file": "label"})
+                else:
+                    tmp["label_from_filecol"] = tmp["file"]
+                    tmp = tmp.drop(columns=["file"])
+            tmp["file"] = file_key
 
-            combined.append(df)
-            tables[file_key] = df.copy()
+            combined.append(tmp)
+            tables[file_key] = tmp.copy()
             existing_tables.add(file_key)
 
         if not combined:
