@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import (
     Any,
     Callable,
@@ -240,7 +241,9 @@ class FileList(ttk.Frame):
         for file_id in self._files:
             tag = tags.get(file_id, "")
             x_val = self._format_ordering(mapping.get(file_id))
-            self.tree.insert("", "end", iid=file_id, values=(file_id, tag, x_val))
+            # Show a friendly name but keep iid as the unique absolute path
+            display_name = os.path.basename(str(file_id)) or str(file_id)
+            self.tree.insert("", "end", iid=file_id, values=(display_name, tag, x_val))
 
         for file_id in previous:
             if self.tree.exists(file_id):
@@ -263,15 +266,12 @@ class FileList(ttk.Frame):
                 continue
             tag = tags.get(file_id, "")
             x_val = self._format_ordering(mapping.get(file_id))
-            self.tree.item(file_id, values=(file_id, tag, x_val))
+            display_name = os.path.basename(str(file_id)) or str(file_id)
+            self.tree.item(file_id, values=(display_name, tag, x_val))
 
     def get_selected_files(self) -> List[str]:
-        selection: List[str] = []
-        for item_id in self.tree.selection():
-            file_id = self.tree.set(item_id, "file")
-            if file_id:
-                selection.append(file_id)
-        return selection
+        # Return the unique internal IDs (treeview iids), not the displayed name
+        return [item_id for item_id in self.tree.selection() if item_id]
 
     def select_file(self, file_id: str) -> None:
         if not file_id or not self.tree.exists(file_id):
@@ -336,7 +336,7 @@ class FileList(ttk.Frame):
     def _apply_edit(self, row_id: str, col_id: str, new_value: str) -> None:
         values = list(self.tree.item(row_id, "values"))
         col_index = int(col_id[1:]) - 1
-        file_id = values[0]
+        file_id = row_id
         if col_index == 1:
             values[col_index] = new_value
             self.tree.item(row_id, values=tuple(values))
